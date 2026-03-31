@@ -1,0 +1,12 @@
+# Standup Kanban configuration
+# project: URL of your GitHub Project (org or user)
+project: "https://github.com/orgs/your-org/projects/1"
+
+# team: GitHub usernames of your team members
+team:
+  - alice
+  - bob
+  - charlie
+
+# status_field: name of the Status field in your GitHub Project
+status_field: "Status"
