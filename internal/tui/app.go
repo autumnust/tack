@@ -98,7 +98,7 @@ func NewApp(config model.Config, configPath string, client *github.Client) AppMo
 		project := cached.Project
 		project.Items = cached.Items
 		app.project = project
-		app.persons = grouping.GroupByPerson(project.Items, config.TeamLogins(), app.strategy, app.displayNames(), app.focusSets())
+		app.persons = grouping.GroupByPerson(project.Items, config.TeamLogins(), app.currentStrategy(), app.displayNames(), app.focusSets())
 		app.board = NewBoardModel(app.persons)
 		app.loading = false
 		age := time.Since(cached.FetchedAt).Truncate(time.Second)
@@ -166,7 +166,17 @@ func (m AppModel) fetchData() tea.Cmd {
 
 		// Save to cache (only focused items)
 		cache.Save(m.config.Project, project, focusNums)
-		persons := grouping.GroupByPerson(project.Items, m.config.TeamLogins(), m.strategy, m.displayNames(), m.focusSets())
+		// Build strategy with parent numbers from this fetch
+		strategy := m.strategy
+		if epic, ok := strategy.(grouping.ByEpic); ok && project.ChildrenMap != nil {
+			pn := make(map[int]bool, len(project.ChildrenMap))
+			for k := range project.ChildrenMap {
+				pn[k] = true
+			}
+			epic.ParentNumbers = pn
+			strategy = epic
+		}
+		persons := grouping.GroupByPerson(project.Items, m.config.TeamLogins(), strategy, m.displayNames(), m.focusSets())
 		return fetchDoneMsg{project: project, persons: persons}
 	}
 }
@@ -288,8 +298,70 @@ func (m AppModel) preRenderAll() tea.Cmd {
 	}
 }
 
+// buildDetailModel creates a detail view for any issue, with navigable
+// sub-issues if the issue has children in ChildrenMap.
+func (m AppModel) buildDetailModel(issue *model.ProjectItem) DetailModel {
+	// Check if this issue has sub-issues
+	var navItems []NavItem
+	if m.project != nil && m.project.ChildrenMap != nil {
+		if subIssues, ok := m.project.ChildrenMap[issue.Number]; ok && len(subIssues) > 0 {
+			for _, si := range subIssues {
+				ni := NavItem{
+					Number: si.Number,
+					Title:  si.Title,
+					State:  si.State,
+				}
+				for _, item := range m.project.Items {
+					if item.Number == si.Number {
+						ni.Status = item.Status
+						ni.Assignees = item.Assignees
+						ni.NodeID = item.ID
+						ni.ItemID = item.ItemID
+						break
+					}
+				}
+				navItems = append(navItems, ni)
+			}
+		}
+	}
+
+	if len(navItems) > 0 {
+		// Build with navigable sub-issues + pre-rendered body
+		bodyContent := ""
+		if rendered, ok := m.renderedDetails[issue.Number]; ok {
+			bodyContent = rendered
+		} else {
+			bodyContent = renderDetail(issue, m.width, m.project.Items)
+		}
+		return newPrerenderedEpicModel(issue, navItems, bodyContent, m.width, m.height)
+	}
+
+	// No sub-issues — standard detail view
+	if rendered, ok := m.renderedDetails[issue.Number]; ok {
+		return newDetailPrerendered(issue, rendered, m.width, m.height)
+	}
+	return NewDetailModel(issue, m.width, m.height, m.project.Items)
+}
+
+func (m AppModel) currentStrategy() grouping.Strategy {
+	switch s := m.strategy.(type) {
+	case grouping.ByEpic:
+		// Inject parent numbers from project's ChildrenMap
+		if m.project != nil && m.project.ChildrenMap != nil {
+			pn := make(map[int]bool, len(m.project.ChildrenMap))
+			for k := range m.project.ChildrenMap {
+				pn[k] = true
+			}
+			s.ParentNumbers = pn
+		}
+		return s
+	default:
+		return m.strategy
+	}
+}
+
 func (m AppModel) regroup() []model.PersonGroup {
-	return grouping.GroupByPerson(m.project.Items, m.config.TeamLogins(), m.strategy, m.displayNames(), m.focusSets())
+	return grouping.GroupByPerson(m.project.Items, m.config.TeamLogins(), m.currentStrategy(), m.displayNames(), m.focusSets())
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -396,24 +468,15 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if result != nil {
 			m.view = viewDetail
 			if result.Issue != nil {
-				if rendered, ok := m.renderedDetails[result.Issue.Number]; ok {
-					m.detail = newDetailPrerendered(result.Issue, rendered, m.width, m.height)
-				} else {
-					m.detail = NewDetailModel(result.Issue, m.width, m.height, m.project.Items)
-				}
+				m.detail = m.buildDetailModel(result.Issue)
 			} else if result.Epic != nil {
-				// Build a synthetic issue for the epic and use pre-rendered content
 				epicIssue := &model.ProjectItem{
 					Title:  result.Epic.Title,
 					Number: result.Epic.Number,
 					URL:    result.Epic.URL,
 					Repo:   result.Epic.Repo,
 				}
-				if rendered, ok := m.renderedDetails[result.Epic.Number]; ok {
-					m.detail = newDetailPrerendered(epicIssue, rendered, m.width, m.height)
-				} else {
-					m.detail = newEpicDetailModel(result.Epic, result.Children, m.width, m.height, m.project.ChildrenMap)
-				}
+				m.detail = m.buildDetailModel(epicIssue)
 			}
 		}
 	}
@@ -444,12 +507,7 @@ func (m AppModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Drill into the selected sub-issue
 			for i := range m.project.Items {
 				if m.project.Items[i].Number == nav.Number {
-					issue := &m.project.Items[i]
-					if rendered, ok := m.renderedDetails[issue.Number]; ok {
-						m.detail = newDetailPrerendered(issue, rendered, m.width, m.height)
-					} else {
-						m.detail = NewDetailModel(issue, m.width, m.height, m.project.Items)
-					}
+					m.detail = m.buildDetailModel(&m.project.Items[i])
 					return m, nil
 				}
 			}
@@ -553,6 +611,21 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 	case "q", "quit":
 		return m.initiateQuit()
 	default:
+		// Check if it's a line number jump (:<N>)
+		if lineNum, err := strconv.Atoi(cmd.Action); err == nil {
+			if m.view == viewDetail && m.detail.HasNav() {
+				if lineNum >= 1 && lineNum <= len(m.detail.navItems) {
+					m.detail.navCursor = lineNum - 1
+					m.detail.RefreshEpicContent(m.width)
+					m.statusMsg = fmt.Sprintf("Jumped to line %d", lineNum)
+				} else {
+					m.statusMsg = fmt.Sprintf("Line %d out of range (1-%d)", lineNum, len(m.detail.navItems))
+				}
+			} else {
+				m.statusMsg = "Line jump only works in detail view with sub-issues"
+			}
+			return m, nil
+		}
 		m.statusMsg = fmt.Sprintf("Unknown command: %s", cmd.Action)
 		return m, nil
 	}
@@ -966,7 +1039,9 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("Esc") + "Back (detail -> board, or cancel command)",
 		"",
 		section("Detail View"),
-		"  " + key("j / k") + "Scroll up/down",
+		"  " + key("j / k") + "Navigate sub-issues, or scroll body",
+		"  " + key("Enter") + "Drill into selected sub-issue",
+		"  " + key(":<N>") + "Jump to sub-issue by line number",
 		"  " + key("d / u") + "Half-page down/up",
 		"  " + key("o") + "Open in browser",
 		"",

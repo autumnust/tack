@@ -180,6 +180,10 @@ func (m DetailModel) renderEpicContentWithBody(body string, width int) string {
 				cursor = cursorStyle.Render("► ")
 			}
 
+			// Line number (1-indexed, right-aligned)
+			lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+				Render(fmt.Sprintf("%d", i+1))
+
 			done := isDoneStr(ni.Status, ni.State)
 			num := issueNumStyle.Render(fmt.Sprintf("#%d", ni.Number))
 			title := ni.Title
@@ -205,7 +209,7 @@ func (m DetailModel) renderEpicContentWithBody(body string, width int) string {
 				assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(ni.Assignees, ", ")))
 			}
 
-			sb.WriteString(fmt.Sprintf("%s%s %s %s  %s%s\n", cursor, branch, num, title, status, assignees))
+			sb.WriteString(fmt.Sprintf("%s%s %s %s %s  %s%s\n", cursor, lineNo, branch, num, title, status, assignees))
 		}
 		sb.WriteString("\n")
 	}

@@ -14,11 +14,17 @@ type Strategy interface {
 
 // ByEpic groups issues by their parent (tracked-in) issue.
 // Standalone issues (no parent) are placed in their own group.
-type ByEpic struct{}
+// If an item is itself a parent (its number is an epic header), it's not shown
+// as a standalone — the epic header already represents it.
+type ByEpic struct {
+	// ParentNumbers is the set of issue numbers that are known parents
+	// (i.e., keys from ChildrenMap). Used to deduplicate parent items.
+	ParentNumbers map[int]bool
+}
 
-func (ByEpic) Name() string { return "epic" }
+func (b ByEpic) Name() string { return "epic" }
 
-func (ByEpic) Group(items []model.ProjectItem) []model.IssueGroup {
+func (b ByEpic) Group(items []model.ProjectItem) []model.IssueGroup {
 	epicMap := make(map[int]*model.IssueGroup) // keyed by parent issue number
 	var standalone []model.ProjectItem
 	var epicOrder []int
@@ -46,8 +52,26 @@ func (ByEpic) Group(items []model.ProjectItem) []model.IssueGroup {
 		groups = append(groups, *epicMap[key])
 	}
 
-	// Standalone issues at the end, each in its own group
+	// Standalone issues at the end — but skip items that are already
+	// represented as epic headers (they ARE the parent ticket).
 	for _, item := range standalone {
+		if _, isEpicHeader := epicMap[item.Number]; isEpicHeader {
+			continue // already shown as the epic group header
+		}
+		if b.ParentNumbers != nil && b.ParentNumbers[item.Number] {
+			// This item is a known parent from ChildrenMap but has no
+			// children assigned to this person — still show as epic header
+			// with empty children (user can drill in to see all sub-issues).
+			groups = append(groups, model.IssueGroup{
+				Parent: &model.ParentRef{
+					Title:  item.Title,
+					Number: item.Number,
+					URL:    item.URL,
+					Repo:   item.Repo,
+				},
+			})
+			continue
+		}
 		groups = append(groups, model.IssueGroup{Issues: []model.ProjectItem{item}})
 	}
 
