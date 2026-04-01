@@ -507,16 +507,9 @@ func (m AppModel) pushCheckedOps() (tea.Model, tea.Cmd) {
 
 func (m AppModel) openInBrowser() (tea.Model, tea.Cmd) {
 	var url string
-	switch m.view {
-	case viewBoard:
-		issue := m.board.SelectedIssue()
-		if issue != nil {
-			url = issue.URL
-		}
-	case viewDetail:
-		if m.detail.issue != nil {
-			url = m.detail.issue.URL
-		}
+	target := m.selectedTarget()
+	if target != nil {
+		url = target.URL
 	}
 	if url == "" {
 		m.statusMsg = "No issue selected"
@@ -547,7 +540,7 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdRemoveMember(cmd.Args)
 	case "group":
 		return m.cmdGroup(cmd.Args)
-	case "assign":
+	case "a", "assign":
 		return m.cmdAssign(cmd.Args)
 	case "focus":
 		return m.cmdFocus(cmd.Args)
@@ -566,28 +559,45 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
-	if len(args) < 2 {
-		m.statusMsg = "Usage: :mv #<number> <status>"
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :mv <status> or :mv #<number> <status>"
 		return m, nil
 	}
-	numStr := strings.TrimPrefix(args[0], "#")
-	num, err := strconv.Atoi(numStr)
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("Invalid issue number: %s", args[0])
-		return m, nil
-	}
-	newStatus := strings.Join(args[1:], " ")
 
 	var target *model.ProjectItem
-	for i := range m.project.Items {
-		if m.project.Items[i].Number == num {
-			target = &m.project.Items[i]
-			break
+	var newStatus string
+
+	if strings.HasPrefix(args[0], "#") {
+		// Explicit issue number: :mv #N <status>
+		if len(args) < 2 {
+			m.statusMsg = "Usage: :mv #<number> <status>"
+			return m, nil
 		}
-	}
-	if target == nil {
-		m.statusMsg = fmt.Sprintf("Issue #%d not found in project", num)
-		return m, nil
+		numStr := strings.TrimPrefix(args[0], "#")
+		num, err := strconv.Atoi(numStr)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Invalid issue number: %s", args[0])
+			return m, nil
+		}
+		for i := range m.project.Items {
+			if m.project.Items[i].Number == num {
+				target = &m.project.Items[i]
+				break
+			}
+		}
+		if target == nil {
+			m.statusMsg = fmt.Sprintf("Issue #%d not found in project", num)
+			return m, nil
+		}
+		newStatus = strings.Join(args[1:], " ")
+	} else {
+		// No issue number: :mv <status> — use selected
+		target = m.selectedTarget()
+		if target == nil {
+			m.statusMsg = "No issue selected. Use :mv #<number> <status> or select an issue first"
+			return m, nil
+		}
+		newStatus = strings.Join(args, " ")
 	}
 
 	matchedStatus := matchStatus(newStatus, m.project.StatusField.Options)
@@ -603,14 +613,14 @@ func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
 	// Queue the operation and apply locally
 	m.ops.Push(PendingOp{
 		Kind:      OpMove,
-		IssueNum:  num,
+		IssueNum:  target.Number,
 		ItemID:    target.ItemID,
 		NewStatus: matchedStatus,
 	})
 	target.Status = matchedStatus
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
-	m.statusMsg = fmt.Sprintf("Queued: mv #%d → %s (%d pending)", num, matchedStatus, m.ops.Len())
+	m.statusMsg = fmt.Sprintf("Queued: mv #%d → %s (%d pending)", target.Number, matchedStatus, m.ops.Len())
 	return m, nil
 }
 
@@ -652,12 +662,7 @@ func (m AppModel) cmdComment(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if target == nil {
-		switch m.view {
-		case viewBoard:
-			target = m.board.SelectedIssue()
-		case viewDetail:
-			target = m.detail.issue
-		}
+		target = m.selectedTarget()
 	}
 
 	if target == nil {
@@ -719,12 +724,7 @@ func (m AppModel) cmdAssign(args []string) (tea.Model, tea.Cmd) {
 	} else {
 		// :assign @Name — use selected issue
 		nameArg = args[0]
-		switch m.view {
-		case viewBoard:
-			target = m.board.SelectedIssue()
-		case viewDetail:
-			target = m.detail.issue
-		}
+		target = m.selectedTarget()
 	}
 
 	if target == nil {
@@ -971,7 +971,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("o") + "Open in browser",
 		"",
 		section("Commands (press : to enter)"),
-		"  " + key(":mv #N <status>") + "Move issue status",
+		"  " + key(":mv <status>") + "Move selected issue (or :mv #N <status>)",
 		"  " + key(":c \"comment\"") + "Comment on selected issue",
 		"  " + key(":c #N \"comment\"") + "Comment on specific issue",
 		"  " + key(":focus 123") + "Add to global focus",
@@ -983,8 +983,8 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":rm @username") + "Remove team member from view",
 		"  " + key(":group epic") + "Group by parent ticket (default)",
 		"  " + key(":group label:<prefix>") + "Group by label prefix",
-		"  " + key(":assign @Name") + "Assign selected issue",
-		"  " + key(":assign #N @Name") + "Assign specific issue",
+		"  " + key(":a @Name") + "Assign selected issue (alias: :assign)",
+		"  " + key(":a #N @Name") + "Assign specific issue",
 		"  " + key(":undo") + "Undo last pending operation",
 		"  " + key(":open") + "Open selected issue in browser",
 		"  " + key(":h") + "Show this help",
@@ -1010,6 +1010,29 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 }
 
 // resolveNameToLogin maps a display name (or login) back to a GitHub login.
+// selectedTarget returns the project item currently under the cursor,
+// checking board selection, detail view issue, and epic nav cursor.
+func (m AppModel) selectedTarget() *model.ProjectItem {
+	switch m.view {
+	case viewBoard:
+		return m.board.SelectedIssue()
+	case viewDetail:
+		// First check if we're on a navigable sub-issue in an epic view
+		if nav := m.detail.SelectedNavItem(); nav != nil && nav.NodeID != "" {
+			for i := range m.project.Items {
+				if m.project.Items[i].Number == nav.Number {
+					return &m.project.Items[i]
+				}
+			}
+		}
+		// Fall back to the detail view's issue itself
+		if m.detail.issue != nil {
+			return m.detail.issue
+		}
+	}
+	return nil
+}
+
 func (m AppModel) resolveNameToLogin(name string) string {
 	lower := strings.ToLower(name)
 	for _, t := range m.config.Team {
