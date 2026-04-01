@@ -2,10 +2,53 @@ package model
 
 import "time"
 
+type TeamMember struct {
+	Login string `yaml:"login"`
+	Name  string `yaml:"name"`
+	Focus []int  `yaml:"focus,omitempty"` // issue numbers (parent or leaf) to filter on
+}
+
 type Config struct {
-	Project     string   `yaml:"project"`
-	Team        []string `yaml:"team"`
-	StatusField string   `yaml:"status_field"`
+	Project     string       `yaml:"project"`
+	Team        []TeamMember `yaml:"team"`
+	StatusField string       `yaml:"status_field"`
+	Focus       []int        `yaml:"focus,omitempty"` // global focus: applies to all team members
+}
+
+// TeamLogins returns just the login strings.
+func (c Config) TeamLogins() []string {
+	logins := make([]string, len(c.Team))
+	for i, m := range c.Team {
+		logins[i] = m.Login
+	}
+	return logins
+}
+
+// FocusSet returns the set of focus issue numbers for a login, or nil if no filter.
+func (c Config) FocusSet(login string) map[int]bool {
+	for _, m := range c.Team {
+		if m.Login == login && len(m.Focus) > 0 {
+			s := make(map[int]bool, len(m.Focus))
+			for _, n := range m.Focus {
+				s[n] = true
+			}
+			return s
+		}
+	}
+	return nil
+}
+
+// DisplayName returns the display name for a login, falling back to login itself.
+func (c Config) DisplayName(login string) string {
+	for _, m := range c.Team {
+		if m.Login == login {
+			if m.Name != "" {
+				return m.Name
+			}
+			return m.Login
+		}
+	}
+	return login
 }
 
 type Project struct {
@@ -14,6 +57,7 @@ type Project struct {
 	Title       string
 	StatusField FieldInfo
 	Items       []ProjectItem
+	ChildrenMap map[int][]SubIssue // parent number -> sub-issues
 }
 
 type FieldInfo struct {
@@ -50,6 +94,13 @@ type ParentRef struct {
 	Repo   string
 }
 
+type SubIssue struct {
+	Number int
+	Title  string
+	State  string
+	URL    string
+}
+
 type Comment struct {
 	Author    string
 	Body      string
@@ -57,8 +108,9 @@ type Comment struct {
 }
 
 type PersonGroup struct {
-	Login  string
-	Groups []IssueGroup
+	Login       string
+	DisplayName string
+	Groups      []IssueGroup
 }
 
 type IssueGroup struct {

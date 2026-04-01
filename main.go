@@ -29,7 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := tui.NewApp(config, client)
+	app := tui.NewApp(config, *configPath, client)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -51,6 +51,19 @@ func loadConfig(path string) (model.Config, error) {
 	}
 	if config.StatusField == "" {
 		config.StatusField = "Status"
+	}
+	// Focus is required — either global or per-person
+	hasFocus := len(config.Focus) > 0
+	if !hasFocus {
+		for _, t := range config.Team {
+			if len(t.Focus) > 0 {
+				hasFocus = true
+				break
+			}
+		}
+	}
+	if !hasFocus {
+		return model.Config{}, fmt.Errorf("'focus' is required — add global focus issue numbers or per-team-member focus lists")
 	}
 	return config, nil
 }

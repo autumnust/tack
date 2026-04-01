@@ -11,15 +11,55 @@ import (
 	"github.com/standup-kanban/standup-kanban/internal/model"
 )
 
+// NavItem is a navigable item in the detail view (sub-issue).
+type NavItem struct {
+	Number int
+	Title  string
+	Status string
+	State  string
+	Assignees []string
+	// If this is a project item, its node ID for actions
+	NodeID string
+	ItemID string
+}
+
 type DetailModel struct {
 	issue    *model.ProjectItem
 	viewport viewport.Model
 	ready    bool
+
+	// Navigable sub-issues
+	navItems  []NavItem
+	navCursor int
 }
 
-func NewDetailModel(issue *model.ProjectItem, width, height int) DetailModel {
+// SelectedNavItem returns the currently highlighted nav item, or nil.
+func (m *DetailModel) SelectedNavItem() *NavItem {
+	if len(m.navItems) == 0 || m.navCursor < 0 || m.navCursor >= len(m.navItems) {
+		return nil
+	}
+	return &m.navItems[m.navCursor]
+}
+
+func (m *DetailModel) NavDown() {
+	if m.navCursor < len(m.navItems)-1 {
+		m.navCursor++
+	}
+}
+
+func (m *DetailModel) NavUp() {
+	if m.navCursor > 0 {
+		m.navCursor--
+	}
+}
+
+func (m *DetailModel) HasNav() bool {
+	return len(m.navItems) > 0
+}
+
+func NewDetailModel(issue *model.ProjectItem, width, height int, allItems []model.ProjectItem) DetailModel {
 	vp := viewport.New(width, height-4)
-	vp.SetContent(renderDetail(issue, width))
+	vp.SetContent(renderDetail(issue, width, allItems))
 	return DetailModel{
 		issue:    issue,
 		viewport: vp,
@@ -27,73 +67,257 @@ func NewDetailModel(issue *model.ProjectItem, width, height int) DetailModel {
 	}
 }
 
+func newDetailPrerendered(issue *model.ProjectItem, content string, width, height int) DetailModel {
+	vp := viewport.New(width, height-4)
+	vp.SetContent(content)
+	return DetailModel{
+		issue:    issue,
+		viewport: vp,
+		ready:    true,
+	}
+}
+
+// newEpicDetailModel creates an interactive detail view for an epic with navigable sub-issues.
+func newEpicDetailModel(parent *model.ParentRef, projectChildren []model.ProjectItem, width, height int, childrenMap map[int][]model.SubIssue) DetailModel {
+	var navItems []NavItem
+
+	// Build nav items from sub-issues map (authoritative)
+	if subIssues, ok := childrenMap[parent.Number]; ok && len(subIssues) > 0 {
+		for _, si := range subIssues {
+			ni := NavItem{
+				Number: si.Number,
+				Title:  si.Title,
+				State:  si.State,
+			}
+			// Enrich with project item data if available
+			for _, item := range projectChildren {
+				if item.Number == si.Number {
+					ni.Status = item.Status
+					ni.Assignees = item.Assignees
+					ni.NodeID = item.ID
+					ni.ItemID = item.ItemID
+					break
+				}
+			}
+			navItems = append(navItems, ni)
+		}
+	} else {
+		// Fallback to project children
+		for _, item := range projectChildren {
+			navItems = append(navItems, NavItem{
+				Number:    item.Number,
+				Title:     item.Title,
+				Status:    item.Status,
+				State:     item.State,
+				Assignees: item.Assignees,
+				NodeID:    item.ID,
+				ItemID:    item.ItemID,
+			})
+		}
+	}
+
+	issue := &model.ProjectItem{
+		Title:  parent.Title,
+		Number: parent.Number,
+		URL:    parent.URL,
+		Repo:   parent.Repo,
+	}
+
+	dm := DetailModel{
+		issue:    issue,
+		navItems: navItems,
+		ready:    true,
+	}
+
+	// Render initial content with cursor at 0
+	vp := viewport.New(width, height-4)
+	vp.SetContent(dm.renderEpicContent(width))
+	dm.viewport = vp
+	return dm
+}
+
+// newPrerenderedEpicModel creates an epic detail with pre-rendered body but interactive nav items.
+func newPrerenderedEpicModel(issue *model.ProjectItem, navItems []NavItem, bodyContent string, width, height int) DetailModel {
+	dm := DetailModel{
+		issue:    issue,
+		navItems: navItems,
+		ready:    true,
+	}
+	vp := viewport.New(width, height-4)
+	vp.SetContent(dm.renderEpicContentWithBody(bodyContent, width))
+	dm.viewport = vp
+	return dm
+}
+
+func (m *DetailModel) RefreshEpicContent(width int) {
+	if len(m.navItems) > 0 {
+		m.viewport.SetContent(m.renderEpicContent(width))
+	}
+}
+
+func (m DetailModel) renderEpicContent(width int) string {
+	return m.renderEpicContentWithBody("", width)
+}
+
+func (m DetailModel) renderEpicContentWithBody(body string, width int) string {
+	var sb strings.Builder
+
+	if len(m.navItems) > 0 {
+		childHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
+			Render(fmt.Sprintf("── Sub-Issues (%d) ", len(m.navItems)))
+		sb.WriteString(childHeader)
+		sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
+		sb.WriteString("\n\n")
+
+		for i, ni := range m.navItems {
+			branch := "├─"
+			if i == len(m.navItems)-1 {
+				branch = "└─"
+			}
+
+			cursor := "  "
+			if i == m.navCursor {
+				cursor = cursorStyle.Render("► ")
+			}
+
+			done := isDoneStr(ni.Status, ni.State)
+			num := issueNumStyle.Render(fmt.Sprintf("#%d", ni.Number))
+			title := ni.Title
+			if done {
+				doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
+				num = doneStyle.Render(fmt.Sprintf("#%d", ni.Number))
+				title = doneStyle.Render(title)
+			} else {
+				title = issueTitleStyle.Render(title)
+			}
+
+			status := ""
+			if ni.Status != "" {
+				status = renderStatus(ni.Status)
+			} else if ni.State == "closed" {
+				status = renderStatus("Done")
+			} else {
+				status = renderStatus("")
+			}
+
+			assignees := ""
+			if len(ni.Assignees) > 0 {
+				assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(ni.Assignees, ", ")))
+			}
+
+			sb.WriteString(fmt.Sprintf("%s%s %s %s  %s%s\n", cursor, branch, num, title, status, assignees))
+		}
+		sb.WriteString("\n")
+	}
+
+	if body != "" {
+		sb.WriteString(body)
+	}
+
+	return sb.String()
+}
+
+func isDoneStr(status, state string) bool {
+	lower := strings.ToLower(status)
+	return lower == "done" || lower == "closed" || state == "closed"
+}
+
 func (m *DetailModel) SetSize(width, height int) {
 	m.viewport.Width = width
 	m.viewport.Height = height - 4
-	if m.issue != nil {
-		m.viewport.SetContent(renderDetail(m.issue, width))
-	}
 }
 
 func (m DetailModel) View(width int) string {
 	var sb strings.Builder
 
-	// Header
-	header := fmt.Sprintf("#%d %s", m.issue.Number, m.issue.Title)
-	sb.WriteString(detailHeaderStyle.Render(header))
-	sb.WriteString("\n")
+	if m.issue.Number != 0 {
+		header := fmt.Sprintf("#%d %s", m.issue.Number, m.issue.Title)
+		sb.WriteString(detailHeaderStyle.Render(header))
+		sb.WriteString("\n")
 
-	// Meta line
-	meta := []string{
-		fmt.Sprintf("Status: %s", renderStatus(m.issue.Status)),
-		fmt.Sprintf("Repo: %s", m.issue.Repo),
-	}
-	if len(m.issue.Assignees) > 0 {
-		meta = append(meta, fmt.Sprintf("Assignees: %s", strings.Join(m.issue.Assignees, ", ")))
-	}
-	if len(m.issue.Labels) > 0 {
-		meta = append(meta, fmt.Sprintf("Labels: %s", strings.Join(m.issue.Labels, ", ")))
-	}
-	if m.issue.Parent != nil {
-		meta = append(meta, fmt.Sprintf("Parent: #%d %s", m.issue.Parent.Number, m.issue.Parent.Title))
-	}
-	sb.WriteString(detailMetaStyle.Render(strings.Join(meta, "  │  ")))
-	sb.WriteString("\n")
+		meta := []string{
+			fmt.Sprintf("Status: %s", renderStatus(m.issue.Status)),
+			fmt.Sprintf("Repo: %s", m.issue.Repo),
+		}
+		if len(m.issue.Assignees) > 0 {
+			meta = append(meta, fmt.Sprintf("Assignees: %s", strings.Join(m.issue.Assignees, ", ")))
+		}
+		if len(m.issue.Labels) > 0 {
+			meta = append(meta, fmt.Sprintf("Labels: %s", strings.Join(m.issue.Labels, ", ")))
+		}
+		if m.issue.Parent != nil {
+			meta = append(meta, fmt.Sprintf("Parent: #%d %s", m.issue.Parent.Number, m.issue.Parent.Title))
+		}
+		sb.WriteString(detailMetaStyle.Render(strings.Join(meta, "  │  ")))
+		sb.WriteString("\n")
 
-	separator := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", min(width-4, 80)))
-	sb.WriteString(separator)
-	sb.WriteString("\n")
+		separator := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", min(width-4, 80)))
+		sb.WriteString(separator)
+		sb.WriteString("\n")
+	}
 
-	// Viewport with rendered content
 	sb.WriteString(m.viewport.View())
 
 	return sb.String()
 }
 
-func renderDetail(issue *model.ProjectItem, width int) string {
+func getOrCreateRenderer(width int) *glamour.TermRenderer {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(min(width-4, 100)),
+	)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+func renderMarkdown(renderer *glamour.TermRenderer, text string) string {
+	if renderer == nil {
+		return text
+	}
+	rendered, err := renderer.Render(text)
+	if err != nil {
+		return text
+	}
+	return rendered
+}
+
+func renderDetail(issue *model.ProjectItem, width int, allItems []model.ProjectItem) string {
+	renderer := getOrCreateRenderer(width)
 	var sb strings.Builder
 
-	// Body (markdown rendered)
-	if issue.Body != "" {
-		renderer, err := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
-			glamour.WithWordWrap(min(width-4, 100)),
-		)
-		if err == nil {
-			rendered, err := renderer.Render(issue.Body)
-			if err == nil {
-				sb.WriteString(rendered)
-			} else {
-				sb.WriteString(issue.Body)
+	children := findChildren(issue.Number, allItems)
+	if len(children) > 0 {
+		childHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
+			Render(fmt.Sprintf("── Child Tickets (%d) ", len(children)))
+		sb.WriteString(childHeader)
+		sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
+		sb.WriteString("\n\n")
+
+		for i, child := range children {
+			branch := "├─"
+			if i == len(children)-1 {
+				branch = "└─"
 			}
-		} else {
-			sb.WriteString(issue.Body)
+			num := issueNumStyle.Render(fmt.Sprintf("#%d", child.Number))
+			title := issueTitleStyle.Render(child.Title)
+			status := renderStatus(child.Status)
+			assignees := ""
+			if len(child.Assignees) > 0 {
+				assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(child.Assignees, ", ")))
+			}
+			sb.WriteString(fmt.Sprintf("  %s %s %s  %s%s\n", branch, num, title, status, assignees))
 		}
+		sb.WriteString("\n")
+	}
+
+	if issue.Body != "" {
+		sb.WriteString(renderMarkdown(renderer, issue.Body))
 	} else {
 		sb.WriteString(helpStyle.Render("  (no description)"))
 	}
 
-	// Comments
 	if len(issue.Comments) > 0 {
 		sb.WriteString("\n")
 		commentHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
@@ -107,30 +331,95 @@ func renderDetail(issue *model.ProjectItem, width int) string {
 			author := commentAuthorStyle.Render(c.Author)
 			ts := commentTimeStyle.Render(fmt.Sprintf("(%s)", age))
 			sb.WriteString(fmt.Sprintf("  %s %s\n", author, ts))
-
-			// Render comment body as markdown
-			renderer, err := glamour.NewTermRenderer(
-				glamour.WithAutoStyle(),
-				glamour.WithWordWrap(min(width-8, 96)),
-			)
-			if err == nil {
-				rendered, err := renderer.Render(c.Body)
-				if err == nil {
-					// Indent
-					for _, line := range strings.Split(rendered, "\n") {
-						sb.WriteString("    " + line + "\n")
-					}
-				} else {
-					sb.WriteString("    " + c.Body + "\n")
-				}
-			} else {
-				sb.WriteString("    " + c.Body + "\n")
+			rendered := renderMarkdown(renderer, c.Body)
+			for _, line := range strings.Split(rendered, "\n") {
+				sb.WriteString("    " + line + "\n")
 			}
 			sb.WriteString("\n")
 		}
 	}
 
 	return sb.String()
+}
+
+func preRenderItem(issue *model.ProjectItem, renderer *glamour.TermRenderer, childrenMap map[int][]model.SubIssue, allItems []model.ProjectItem) string {
+	var sb strings.Builder
+
+	if children, ok := childrenMap[issue.Number]; ok && len(children) > 0 {
+		childHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
+			Render(fmt.Sprintf("── Sub-Issues (%d) ", len(children)))
+		sb.WriteString(childHeader)
+		sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
+		sb.WriteString("\n\n")
+
+		for i, child := range children {
+			branch := "├─"
+			if i == len(children)-1 {
+				branch = "└─"
+			}
+			num := issueNumStyle.Render(fmt.Sprintf("#%d", child.Number))
+			title := issueTitleStyle.Render(child.Title)
+			status := ""
+			assignees := ""
+			for _, item := range allItems {
+				if item.Number == child.Number {
+					status = renderStatus(item.Status)
+					if len(item.Assignees) > 0 {
+						assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(item.Assignees, ", ")))
+					}
+					break
+				}
+			}
+			if status == "" {
+				if child.State == "closed" {
+					status = renderStatus("Done")
+				} else {
+					status = renderStatus("")
+				}
+			}
+			sb.WriteString(fmt.Sprintf("  %s %s %s  %s%s\n", branch, num, title, status, assignees))
+		}
+		sb.WriteString("\n")
+	}
+
+	if issue.Body != "" {
+		sb.WriteString(renderMarkdown(renderer, issue.Body))
+	} else {
+		sb.WriteString(helpStyle.Render("  (no description)"))
+	}
+
+	if len(issue.Comments) > 0 {
+		sb.WriteString("\n")
+		commentHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
+			Render(fmt.Sprintf("── Comments (%d) ", len(issue.Comments)))
+		sb.WriteString(commentHeader)
+		sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
+		sb.WriteString("\n\n")
+
+		for _, c := range issue.Comments {
+			age := timeAgo(c.CreatedAt)
+			author := commentAuthorStyle.Render(c.Author)
+			ts := commentTimeStyle.Render(fmt.Sprintf("(%s)", age))
+			sb.WriteString(fmt.Sprintf("  %s %s\n", author, ts))
+			rendered := renderMarkdown(renderer, c.Body)
+			for _, line := range strings.Split(rendered, "\n") {
+				sb.WriteString("    " + line + "\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+func findChildren(parentNumber int, allItems []model.ProjectItem) []model.ProjectItem {
+	var children []model.ProjectItem
+	for _, item := range allItems {
+		if item.Parent != nil && item.Parent.Number == parentNumber {
+			children = append(children, item)
+		}
+	}
+	return children
 }
 
 func timeAgo(t time.Time) string {

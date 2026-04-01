@@ -6,11 +6,15 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type CommandModel struct {
-	input  textinput.Model
-	active bool
+	input       textinput.Model
+	active      bool
+	completions []string // current matching completions
+	compIdx     int      // selected completion index (-1 = none)
+	allNames    []string // all completable names (set externally)
 }
 
 type CommandResult struct {
@@ -23,18 +27,26 @@ func NewCommandModel() CommandModel {
 	ti := textinput.New()
 	ti.Prompt = ":"
 	ti.CharLimit = 256
-	return CommandModel{input: ti}
+	return CommandModel{input: ti, compIdx: -1}
+}
+
+func (m *CommandModel) SetCompletionNames(names []string) {
+	m.allNames = names
 }
 
 func (m *CommandModel) Activate() {
 	m.active = true
 	m.input.SetValue("")
 	m.input.Focus()
+	m.completions = nil
+	m.compIdx = -1
 }
 
 func (m *CommandModel) Deactivate() {
 	m.active = false
 	m.input.Blur()
+	m.completions = nil
+	m.compIdx = -1
 }
 
 func (m *CommandModel) IsActive() bool {
@@ -53,22 +65,120 @@ func (m *CommandModel) Update(msg tea.Msg) (*CommandResult, tea.Cmd) {
 			m.Deactivate()
 			return nil, nil
 		case tea.KeyEnter:
+			// If completion is active, accept it first
+			if m.compIdx >= 0 && m.compIdx < len(m.completions) {
+				m.acceptCompletion()
+				return nil, nil
+			}
 			result := parseCommand(m.input.Value())
 			m.Deactivate()
 			return result, nil
+		case tea.KeyTab:
+			if len(m.completions) > 0 {
+				// Cycle forward
+				m.compIdx = (m.compIdx + 1) % len(m.completions)
+				return nil, nil
+			}
+		case tea.KeyShiftTab:
+			if len(m.completions) > 0 {
+				// Cycle backward
+				m.compIdx--
+				if m.compIdx < 0 {
+					m.compIdx = len(m.completions) - 1
+				}
+				return nil, nil
+			}
 		}
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+
+	// Update completions based on current input
+	m.updateCompletions()
+
 	return nil, cmd
 }
 
-func (m CommandModel) View() string {
-	if m.active {
-		return commandBarStyle.Render(m.input.View())
+func (m *CommandModel) updateCompletions() {
+	val := m.input.Value()
+
+	// Find the last @ token being typed
+	atIdx := strings.LastIndex(val, "@")
+	if atIdx < 0 {
+		m.completions = nil
+		m.compIdx = -1
+		return
 	}
-	return ""
+
+	// Extract the partial name after @
+	partial := strings.ToLower(val[atIdx+1:])
+	// Don't complete if there's a space after the partial (user moved on)
+	if strings.Contains(partial, " ") {
+		m.completions = nil
+		m.compIdx = -1
+		return
+	}
+
+	var matches []string
+	for _, name := range m.allNames {
+		if partial == "" || strings.HasPrefix(strings.ToLower(name), partial) {
+			matches = append(matches, name)
+		}
+	}
+
+	m.completions = matches
+	if len(matches) == 0 {
+		m.compIdx = -1
+	} else if m.compIdx >= len(matches) {
+		m.compIdx = 0
+	}
+}
+
+func (m *CommandModel) acceptCompletion() {
+	if m.compIdx < 0 || m.compIdx >= len(m.completions) {
+		return
+	}
+	selected := m.completions[m.compIdx]
+
+	val := m.input.Value()
+	atIdx := strings.LastIndex(val, "@")
+	if atIdx < 0 {
+		return
+	}
+
+	// Replace from @ to end with the selected name
+	newVal := val[:atIdx+1] + selected + " "
+	m.input.SetValue(newVal)
+	m.input.SetCursor(len(newVal))
+	m.completions = nil
+	m.compIdx = -1
+}
+
+func (m CommandModel) View() string {
+	if !m.active {
+		return ""
+	}
+
+	inputLine := m.input.View()
+
+	if len(m.completions) > 0 {
+		// Render completions inline
+		var compParts []string
+		for i, c := range m.completions {
+			if i == m.compIdx {
+				compParts = append(compParts,
+					lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Render(c))
+			} else {
+				compParts = append(compParts,
+					lipgloss.NewStyle().Foreground(colorMuted).Render(c))
+			}
+		}
+		hint := "  " + strings.Join(compParts, "  ")
+		return commandBarStyle.Render(inputLine + "\n" + hint)
+	}
+
+	return commandBarStyle.Render(inputLine)
 }
 
 func parseCommand(raw string) *CommandResult {

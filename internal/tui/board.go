@@ -159,18 +159,38 @@ func (b *BoardModel) ensureVisible() {
 	}
 }
 
-// ToggleOrSelect handles Enter key. Returns the selected issue if on an issue row.
-func (b *BoardModel) ToggleOrSelect() *model.ProjectItem {
+type SelectResult struct {
+	Issue  *model.ProjectItem // non-nil if a specific issue was selected
+	Epic   *model.ParentRef   // non-nil if an epic header was drilled into
+	Children []model.ProjectItem // children of the epic
+}
+
+// ToggleOrSelect handles Enter key.
+// First Enter on collapsed epic: expand. Enter on expanded epic: drill in.
+// Enter on issue: drill into issue.
+func (b *BoardModel) ToggleOrSelect() *SelectResult {
 	if b.cursorIdx >= len(b.visibleItems) {
 		return nil
 	}
 	item := b.visibleItems[b.cursorIdx]
 	if item.kind == kindEpicHeader {
-		b.expanded[item.epicKey] = !b.expanded[item.epicKey]
-		b.rebuildVisible()
-		return nil
+		if !b.expanded[item.epicKey] {
+			// Expand
+			b.expanded[item.epicKey] = true
+			b.rebuildVisible()
+			return nil
+		}
+		// Already expanded — drill into epic
+		var children []model.ProjectItem
+		if b.personIdx < len(b.persons) {
+			p := b.persons[b.personIdx]
+			if item.groupIdx < len(p.Groups) {
+				children = p.Groups[item.groupIdx].Issues
+			}
+		}
+		return &SelectResult{Epic: item.parent, Children: children}
 	}
-	return item.issue
+	return &SelectResult{Issue: item.issue}
 }
 
 func (b *BoardModel) SelectedIssue() *model.ProjectItem {
@@ -203,7 +223,11 @@ func (b *BoardModel) View(width, height int) string {
 		for _, g := range p.Groups {
 			issueCount += len(g.Issues)
 		}
-		label := fmt.Sprintf("%s (%d)", p.Login, issueCount)
+		name := p.DisplayName
+		if name == "" {
+			name = p.Login
+		}
+		label := fmt.Sprintf("%s (%d)", name, issueCount)
 		if i == b.personIdx {
 			tabs = append(tabs, activeTabStyle.Render(label))
 		} else {
@@ -260,9 +284,17 @@ func (b *BoardModel) View(width, height int) string {
 				}
 			}
 
+			done := isDone(item.issue.Status, item.issue.State)
 			num := issueNumStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
-			title := issueTitleStyle.Render(truncate(item.issue.Title, width-30))
+			title := truncate(item.issue.Title, width-30)
 			status := renderStatus(item.issue.Status)
+			if done {
+				doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
+				num = doneStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
+				title = doneStyle.Render(title)
+			} else {
+				title = issueTitleStyle.Render(title)
+			}
 			line := fmt.Sprintf("  %s %s %s  %s", branch, num, title, status)
 			sb.WriteString(cursor + line)
 		}
@@ -299,6 +331,11 @@ func renderStatus(status string) string {
 		}
 		return s.Render("○ " + status)
 	}
+}
+
+func isDone(status, state string) bool {
+	lower := strings.ToLower(status)
+	return lower == "done" || lower == "closed" || state == "closed"
 }
 
 func truncate(s string, max int) string {

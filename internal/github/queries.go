@@ -394,4 +394,80 @@ func parseItems(data json.RawMessage, statusFieldName string) ([]model.ProjectIt
 	return items, pi, nil
 }
 
-// No extra helpers needed — time parsing is done inline via time.Parse.
+// FetchSubIssues fetches sub-issues for a given issue number using the REST API.
+// Returns a map of parent issue number -> list of child issue references.
+func (c *Client) FetchSubIssues(repo string, issueNumbers []int) (map[int][]model.SubIssue, error) {
+	result := make(map[int][]model.SubIssue)
+	for _, num := range issueNumbers {
+		path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", repo, num)
+		data, err := c.RestGet(path)
+		if err != nil {
+			// Sub-issues API might not be available or issue has none — skip
+			continue
+		}
+		var subIssues []struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+			State  string `json:"state"`
+			URL    string `json:"html_url"`
+		}
+		if err := json.Unmarshal(data, &subIssues); err != nil {
+			continue
+		}
+		for _, si := range subIssues {
+			result[num] = append(result[num], model.SubIssue{
+				Number: si.Number,
+				Title:  si.Title,
+				State:  si.State,
+				URL:    si.URL,
+			})
+		}
+	}
+	return result, nil
+}
+
+// ResolveParentsFromSubIssues sets the Parent field on project items
+// based on sub-issue relationships from focus tickets.
+func ResolveParentsFromSubIssues(items []model.ProjectItem, subIssueMap map[int][]model.SubIssue, repo string) {
+	// Build reverse map: child number -> parent info
+	childToParent := make(map[int]*model.ParentRef)
+	for parentNum, children := range subIssueMap {
+		for _, child := range children {
+			// Find parent title from sub-issue map context
+			childToParent[child.Number] = &model.ParentRef{
+				Number: parentNum,
+				Repo:   repo,
+			}
+		}
+	}
+
+	// Also build a number->title map from sub-issue parents
+	// We need parent titles — fetch from items or sub-issue data
+	parentTitles := make(map[int]string)
+	for parentNum, children := range subIssueMap {
+		// Check if parent is itself an item
+		for _, item := range items {
+			if item.Number == parentNum {
+				parentTitles[parentNum] = item.Title
+				break
+			}
+		}
+		// If not found as item, we'll use the parent number
+		if parentTitles[parentNum] == "" {
+			_ = children // title will be set later
+		}
+	}
+
+	// Set Parent on items that are children
+	for i := range items {
+		if ref, ok := childToParent[items[i].Number]; ok {
+			if items[i].Parent == nil {
+				items[i].Parent = &model.ParentRef{
+					Number: ref.Number,
+					Title:  parentTitles[ref.Number],
+					Repo:   ref.Repo,
+				}
+			}
+		}
+	}
+}

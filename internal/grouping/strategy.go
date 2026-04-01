@@ -101,7 +101,13 @@ func (b ByLabel) Group(items []model.ProjectItem) []model.IssueGroup {
 }
 
 // GroupByPerson takes all project items and groups them by assignee, then by strategy.
-func GroupByPerson(items []model.ProjectItem, team []string, strategy Strategy) []model.PersonGroup {
+// displayNames maps login -> friendly name. focusSets maps login -> set of focus issue numbers.
+func GroupByPerson(items []model.ProjectItem, team []string, strategy Strategy, displayNames map[string]string, focusSets ...map[string]map[int]bool) []model.PersonGroup {
+	var focuses map[string]map[int]bool
+	if len(focusSets) > 0 {
+		focuses = focusSets[0]
+	}
+
 	byPerson := make(map[string][]model.ProjectItem)
 	for _, item := range items {
 		if len(item.Assignees) == 0 {
@@ -113,36 +119,69 @@ func GroupByPerson(items []model.ProjectItem, team []string, strategy Strategy) 
 		}
 	}
 
+	nameFor := func(login string) string {
+		if n, ok := displayNames[login]; ok && n != "" {
+			return n
+		}
+		return login
+	}
+
+	filterItems := func(login string, items []model.ProjectItem) []model.ProjectItem {
+		if focuses == nil {
+			return items
+		}
+		focus, ok := focuses[login]
+		if !ok || len(focus) == 0 {
+			return items
+		}
+		var filtered []model.ProjectItem
+		for _, item := range items {
+			// Keep if: issue number is in focus, or parent number is in focus
+			if focus[item.Number] {
+				filtered = append(filtered, item)
+			} else if item.Parent != nil && focus[item.Parent.Number] {
+				filtered = append(filtered, item)
+			}
+		}
+		return filtered
+	}
+
 	// Build in team order, then append anyone not in team list
 	seen := make(map[string]bool)
 	var result []model.PersonGroup
 
 	for _, login := range team {
 		seen[login] = true
-		items := byPerson[login]
-		if len(items) == 0 {
-			result = append(result, model.PersonGroup{Login: login})
+		personItems := filterItems(login, byPerson[login])
+		if len(personItems) == 0 {
+			result = append(result, model.PersonGroup{Login: login, DisplayName: nameFor(login)})
 			continue
 		}
 		result = append(result, model.PersonGroup{
-			Login:  login,
-			Groups: strategy.Group(items),
+			Login:       login,
+			DisplayName: nameFor(login),
+			Groups:      strategy.Group(personItems),
 		})
 	}
 
-	// Others not in team config
-	var others []string
-	for login := range byPerson {
-		if !seen[login] {
-			others = append(others, login)
+	// Only show team members when a team list is configured.
+	// Others are excluded — use :add to include them.
+	if len(team) == 0 {
+		var others []string
+		for login := range byPerson {
+			if !seen[login] {
+				others = append(others, login)
+			}
 		}
-	}
-	sort.Strings(others)
-	for _, login := range others {
-		result = append(result, model.PersonGroup{
-			Login:  login,
-			Groups: strategy.Group(byPerson[login]),
-		})
+		sort.Strings(others)
+		for _, login := range others {
+			personItems := filterItems(login, byPerson[login])
+			result = append(result, model.PersonGroup{
+				Login:       login,
+				DisplayName: nameFor(login),
+				Groups:      strategy.Group(personItems),
+			})
+		}
 	}
 
 	return result

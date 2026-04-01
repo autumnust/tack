@@ -87,3 +87,31 @@ func (c *Client) graphql(query string, variables map[string]any) (json.RawMessag
 
 	return gqlResp.Data, nil
 }
+
+// RestGet performs a GET request to the GitHub REST API.
+func (c *Client) RestGet(path string) (json.RawMessage, error) {
+	url := "https://api.github.com" + path
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
+}
