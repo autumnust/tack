@@ -24,3 +24,8 @@ team:
 
 # status_field: name of the Status field in your GitHub Project
 status_field: "Status"
+
+# planning: personal planning data directory
+# Can point to an Obsidian vault or any local/synced folder
+planning:
+  dir: "~/.standup-kanban"

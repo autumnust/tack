@@ -8,11 +8,16 @@ type TeamMember struct {
 	Focus []int  `yaml:"focus,omitempty"` // issue numbers (parent or leaf) to filter on
 }
 
+type PlanningConfig struct {
+	Dir string `yaml:"dir"` // directory for planning files (plan.yaml, annotations.yaml, inbox.yaml, scratch.md)
+}
+
 type Config struct {
-	Project     string       `yaml:"project"`
-	Team        []TeamMember `yaml:"team"`
-	StatusField string       `yaml:"status_field"`
-	Focus       []int        `yaml:"focus,omitempty"` // global focus: applies to all team members
+	Project     string         `yaml:"project"`
+	Team        []TeamMember   `yaml:"team"`
+	StatusField string         `yaml:"status_field"`
+	Focus       []int          `yaml:"focus,omitempty"`
+	Planning    PlanningConfig `yaml:"planning,omitempty"`
 }
 
 // TeamLogins returns just the login strings.

@@ -15,6 +15,7 @@ import (
 	"github.com/standup-kanban/standup-kanban/internal/github"
 	"github.com/standup-kanban/standup-kanban/internal/grouping"
 	"github.com/standup-kanban/standup-kanban/internal/model"
+	"github.com/standup-kanban/standup-kanban/internal/planning"
 )
 
 type viewMode int
@@ -23,6 +24,7 @@ const (
 	viewBoard viewMode = iota
 	viewDetail
 	viewReview
+	viewPlan
 )
 
 type AppModel struct {
@@ -40,12 +42,19 @@ type AppModel struct {
 	// Operation queue
 	ops OpQueue
 
+	// Planning
+	planStore   *planning.Store
+	plan        *model.Plan
+	annotations *model.Annotations
+	inbox       *model.Inbox
+
 	// View state
-	view    viewMode
-	board   BoardModel
-	detail  DetailModel
-	command CommandModel
-	review  ReviewModel
+	view     viewMode
+	board    BoardModel
+	detail   DetailModel
+	command  CommandModel
+	review   ReviewModel
+	planView PlanViewModel
 
 	// Layout
 	width  int
@@ -91,6 +100,34 @@ func NewApp(config model.Config, configPath string, client *github.Client) AppMo
 		names = append(names, t.Login)
 	}
 	app.command.SetCompletionNames(names)
+
+	// Initialize planning store
+	planDir := config.Planning.Dir
+	if planDir == "" {
+		planDir = "~/.standup-kanban"
+	}
+	if store, err := planning.NewStore(planDir); err == nil {
+		app.planStore = store
+		if plan, err := store.LoadPlan(); err == nil {
+			app.plan = plan
+		} else {
+			app.plan = &model.Plan{}
+		}
+		if ann, err := store.LoadAnnotations(); err == nil {
+			app.annotations = ann
+		} else {
+			app.annotations = &model.Annotations{}
+		}
+		if inbox, err := store.LoadInbox(); err == nil {
+			app.inbox = inbox
+		} else {
+			app.inbox = &model.Inbox{}
+		}
+	} else {
+		app.plan = &model.Plan{}
+		app.annotations = &model.Annotations{}
+		app.inbox = &model.Inbox{}
+	}
 
 	// Load cache synchronously — no loading flash
 	cached := cache.LoadAny(config.Project)
@@ -447,6 +484,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateBoard(msg)
 		case viewDetail:
 			return m.updateDetail(msg)
+		case viewPlan:
+			return m.updatePlan(msg)
 		}
 	}
 
@@ -547,12 +586,24 @@ func (m AppModel) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) initiateQuit() (tea.Model, tea.Cmd) {
+	// Always save planning data on quit
+	m.savePlanningData()
+
 	if m.ops.Len() == 0 {
 		return m, tea.Quit
 	}
 	m.view = viewReview
 	m.review = NewReviewModel(&m.ops)
 	return m, nil
+}
+
+func (m AppModel) savePlanningData() {
+	if m.planStore == nil {
+		return
+	}
+	m.planStore.SavePlan(m.plan)
+	m.planStore.SaveAnnotations(m.annotations)
+	m.planStore.SaveInbox(m.inbox)
 }
 
 func (m AppModel) pushCheckedOps() (tea.Model, tea.Cmd) {
@@ -604,6 +655,26 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdFocus(cmd.Args)
 	case "unfocus":
 		return m.cmdUnfocus(cmd.Args)
+	case "note":
+		return m.cmdNote(cmd.Args)
+	case "pin":
+		return m.cmdPin(cmd.Args)
+	case "plan":
+		return m.cmdSwitchToPlan()
+	case "board":
+		return m.cmdSwitchToBoard()
+	case "goal":
+		return m.cmdGoal(cmd.Args)
+	case "today":
+		return m.cmdToday(cmd.Args)
+	case "done":
+		return m.cmdDone(cmd.Args)
+	case "scratch":
+		return m.cmdScratch(cmd.Args)
+	case "inbox":
+		return m.cmdInbox(cmd.Args)
+	case "del", "delete":
+		return m.cmdDelete(cmd.Args)
 	case "undo":
 		return m.cmdUndo()
 	case "h", "help":
@@ -1060,9 +1131,26 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":group label:<prefix>") + "Group by label prefix",
 		"  " + key(":a @Name") + "Assign selected issue (alias: :assign)",
 		"  " + key(":a #N @Name") + "Assign specific issue",
+		"  " + key(":note \"text\"") + "Private annotation on selected issue",
+		"  " + key(":pin") + "Pin selected issue to week focus",
 		"  " + key(":undo") + "Undo last pending operation",
 		"  " + key(":open") + "Open selected issue in browser",
 		"  " + key(":h") + "Show this help",
+		"",
+		section("Mode Switching"),
+		"  " + key(":plan") + "Switch to planning mode",
+		"  " + key(":board") + "Switch to standup mode",
+		"",
+		section("Planning Mode"),
+		"  " + key("Tab / h / l") + "Switch section (Week/Today/Inbox/Scratch)",
+		"  " + key("j / k") + "Navigate items",
+		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N)",
+		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
+		"  " + key(":done") + "Toggle done on selected today item",
+		"  " + key(":done N") + "Toggle done by line number",
+		"  " + key(":scratch \"note\"") + "Add scratch note",
+		"  " + key(":del") + "Delete selected item",
+		"  " + key(":inbox clear") + "Clear inbox",
 		"",
 		section("Global"),
 		"  " + key("r") + "Refresh from GitHub",
@@ -1071,7 +1159,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("q") + "Review pending changes & quit",
 		"",
 		helpStyle.Render("All :mv and :c commands are local-only until you quit."),
-		helpStyle.Render("On quit, you review and confirm what gets pushed to GitHub."),
+		helpStyle.Render("Planning data is saved automatically on quit."),
 	}
 
 	helpIssue := &model.ProjectItem{
@@ -1108,6 +1196,282 @@ func (m AppModel) selectedTarget() *model.ProjectItem {
 	return nil
 }
 
+// --- Planning mode key handler ---
+
+func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "l":
+		m.planView.NextSection()
+	case "shift+tab", "h":
+		m.planView.PrevSection()
+	case "j", "down":
+		m.planView.CursorDown()
+	case "k", "up":
+		m.planView.CursorUp()
+	}
+	return m, nil
+}
+
+// --- Mode switching ---
+
+func (m AppModel) cmdSwitchToPlan() (tea.Model, tea.Cmd) {
+	m.planView = NewPlanViewModel(m.plan, m.inbox, m.project)
+	m.view = viewPlan
+	m.statusMsg = "Planning mode"
+	return m, nil
+}
+
+func (m AppModel) cmdSwitchToBoard() (tea.Model, tea.Cmd) {
+	m.view = viewBoard
+	m.statusMsg = "Standup mode"
+	return m, nil
+}
+
+// --- Standup annotation commands ---
+
+func (m AppModel) cmdNote(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :note \"your private note\""
+		return m, nil
+	}
+	target := m.selectedTarget()
+	if target == nil {
+		m.statusMsg = "No issue selected"
+		return m, nil
+	}
+
+	note := strings.Join(args, " ")
+	now := time.Now()
+
+	// Find or create annotation
+	found := false
+	for i := range m.annotations.Items {
+		if m.annotations.Items[i].IssueNum == target.Number {
+			m.annotations.Items[i].Notes = append(m.annotations.Items[i].Notes, note)
+			m.annotations.Items[i].UpdatedAt = now
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.annotations.Items = append(m.annotations.Items, model.Annotation{
+			IssueNum:  target.Number,
+			IssueRepo: target.Repo,
+			Notes:     []string{note},
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+
+	m.statusMsg = fmt.Sprintf("Note added to #%d (private)", target.Number)
+	return m, nil
+}
+
+func (m AppModel) cmdPin(args []string) (tea.Model, tea.Cmd) {
+	var issueNum int
+	var repo, title string
+
+	if len(args) > 0 && strings.HasPrefix(args[0], "#") {
+		numStr := strings.TrimPrefix(args[0], "#")
+		if n, err := strconv.Atoi(numStr); err == nil {
+			issueNum = n
+			for _, item := range m.project.Items {
+				if item.Number == n {
+					repo = item.Repo
+					title = item.Title
+					break
+				}
+			}
+		}
+	} else {
+		target := m.selectedTarget()
+		if target == nil {
+			m.statusMsg = "No issue selected. Use :pin or :pin #N"
+			return m, nil
+		}
+		issueNum = target.Number
+		repo = target.Repo
+		title = target.Title
+	}
+
+	// Check if already pinned
+	for _, f := range m.plan.WeekFocus {
+		if f.IssueNum == issueNum {
+			m.statusMsg = fmt.Sprintf("#%d is already in week focus", issueNum)
+			return m, nil
+		}
+	}
+
+	m.plan.WeekFocus = append(m.plan.WeekFocus, model.FocusItem{
+		Text:      title,
+		IssueNum:  issueNum,
+		IssueRepo: repo,
+		Pinned:    true,
+	})
+
+	m.statusMsg = fmt.Sprintf("Pinned #%d to week focus", issueNum)
+	return m, nil
+}
+
+// --- Planning mode commands ---
+
+func (m AppModel) cmdGoal(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :goal \"description\" or :goal #N"
+		return m, nil
+	}
+
+	// Check if it's an issue reference
+	if strings.HasPrefix(args[0], "#") {
+		return m.cmdPin(args)
+	}
+
+	text := strings.Join(args, " ")
+	m.plan.WeekFocus = append(m.plan.WeekFocus, model.FocusItem{Text: text})
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.statusMsg = fmt.Sprintf("Added goal: %s", text)
+	return m, nil
+}
+
+func (m AppModel) cmdToday(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :today \"task description\" or :today #N"
+		return m, nil
+	}
+
+	item := model.TodoItem{Text: strings.Join(args, " ")}
+
+	// Check if first arg is an issue reference
+	if strings.HasPrefix(args[0], "#") {
+		numStr := strings.TrimPrefix(args[0], "#")
+		if n, err := strconv.Atoi(numStr); err == nil {
+			item.IssueNum = n
+			if len(args) > 1 {
+				item.Text = strings.Join(args[1:], " ")
+			} else {
+				// Use issue title
+				for _, pi := range m.project.Items {
+					if pi.Number == n {
+						item.Text = pi.Title
+						break
+					}
+				}
+			}
+		}
+	}
+
+	m.plan.Today = append(m.plan.Today, item)
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.statusMsg = fmt.Sprintf("Added to today: %s", item.Text)
+	return m, nil
+}
+
+func (m AppModel) cmdDone(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		// Toggle current cursor item in Today section
+		if m.view == viewPlan && m.planView.section == sectionToday {
+			idx := m.planView.cursorIdx
+			if idx >= 0 && idx < len(m.plan.Today) {
+				m.plan.Today[idx].Done = !m.plan.Today[idx].Done
+				m.planView.SetData(m.plan, m.inbox, m.project)
+				if m.plan.Today[idx].Done {
+					m.statusMsg = fmt.Sprintf("Completed: %s", m.plan.Today[idx].Text)
+				} else {
+					m.statusMsg = fmt.Sprintf("Uncompleted: %s", m.plan.Today[idx].Text)
+				}
+				return m, nil
+			}
+		}
+		m.statusMsg = "Usage: :done <N> or select a today item and :done"
+		return m, nil
+	}
+
+	n, err := strconv.Atoi(args[0])
+	if err != nil || n < 1 || n > len(m.plan.Today) {
+		m.statusMsg = fmt.Sprintf("Invalid item number (1-%d)", len(m.plan.Today))
+		return m, nil
+	}
+	m.plan.Today[n-1].Done = !m.plan.Today[n-1].Done
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	if m.plan.Today[n-1].Done {
+		m.statusMsg = fmt.Sprintf("Completed: %s", m.plan.Today[n-1].Text)
+	} else {
+		m.statusMsg = fmt.Sprintf("Uncompleted: %s", m.plan.Today[n-1].Text)
+	}
+	return m, nil
+}
+
+func (m AppModel) cmdScratch(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :scratch \"your note\""
+		return m, nil
+	}
+	text := strings.Join(args, " ")
+	m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
+		Text:      text,
+		CreatedAt: time.Now(),
+	})
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.statusMsg = "Scratch note added"
+	return m, nil
+}
+
+func (m AppModel) cmdInbox(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :inbox clear"
+		return m, nil
+	}
+	if args[0] == "clear" {
+		m.inbox = &model.Inbox{}
+		m.planView.SetData(m.plan, m.inbox, m.project)
+		m.statusMsg = "Inbox cleared"
+		return m, nil
+	}
+	m.statusMsg = fmt.Sprintf("Unknown inbox command: %s", args[0])
+	return m, nil
+}
+
+func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
+	if m.view != viewPlan {
+		m.statusMsg = ":del only works in planning mode"
+		return m, nil
+	}
+	// Delete the item at cursor in current section, or by line number
+	idx := m.planView.cursorIdx
+	if len(args) > 0 {
+		if n, err := strconv.Atoi(args[0]); err == nil {
+			idx = n - 1
+		}
+	}
+
+	switch m.planView.section {
+	case sectionWeekFocus:
+		if idx >= 0 && idx < len(m.plan.WeekFocus) {
+			removed := m.plan.WeekFocus[idx].Text
+			m.plan.WeekFocus = append(m.plan.WeekFocus[:idx], m.plan.WeekFocus[idx+1:]...)
+			m.statusMsg = fmt.Sprintf("Removed from week focus: %s", removed)
+		}
+	case sectionToday:
+		if idx >= 0 && idx < len(m.plan.Today) {
+			removed := m.plan.Today[idx].Text
+			m.plan.Today = append(m.plan.Today[:idx], m.plan.Today[idx+1:]...)
+			m.statusMsg = fmt.Sprintf("Removed from today: %s", removed)
+		}
+	case sectionScratch:
+		if idx >= 0 && idx < len(m.plan.Scratch) {
+			m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
+			m.statusMsg = "Scratch note removed"
+		}
+	case sectionInbox:
+		if m.inbox != nil && idx >= 0 && idx < len(m.inbox.Items) {
+			m.inbox.Items = append(m.inbox.Items[:idx], m.inbox.Items[idx+1:]...)
+			m.statusMsg = "Inbox item removed"
+		}
+	}
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	return m, nil
+}
+
 func (m AppModel) resolveNameToLogin(name string) string {
 	lower := strings.ToLower(name)
 	for _, t := range m.config.Team {
@@ -1135,6 +1499,8 @@ func (m AppModel) View() string {
 		content = m.detail.View(m.width)
 	case viewReview:
 		content = m.review.View(m.width, m.height)
+	case viewPlan:
+		content = m.planView.View(m.width, m.height)
 	}
 
 	// Status bar
@@ -1145,6 +1511,8 @@ func (m AppModel) View() string {
 		viewHint = helpStyle.Render("[detail] Esc=back  j/k=scroll  o=open  :=cmd")
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
+	case viewPlan:
+		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  :board=back  :goal/:today/:scratch  :=cmd")
 	default:
 		pending := ""
 		if m.ops.Len() > 0 {
