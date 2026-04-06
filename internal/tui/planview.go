@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/standup-kanban/standup-kanban/internal/model"
@@ -16,7 +15,7 @@ const (
 	sectionToday
 	sectionInbox
 	sectionScratch
-	sectionCount // sentinel for wrapping
+	sectionCount
 )
 
 func sectionName(s planSection) string {
@@ -33,35 +32,80 @@ func sectionName(s planSection) string {
 	return ""
 }
 
+// flatItem represents a single navigable row in the plan view.
+type flatItem struct {
+	section  planSection
+	focusIdx int // index into WeekFocus (for sub-items, the parent)
+	subIdx   int // -1 if this is a top-level item, >=0 if sub-item
+}
+
 type PlanViewModel struct {
 	plan    *model.Plan
 	inbox   *model.Inbox
-	project *model.Project // for resolving issue status
+	project *model.Project
 
-	section    planSection
-	cursorIdx  int
+	section      planSection
+	flatItems    []flatItem
+	cursorIdx    int
 	scrollOffset int
-	viewHeight int
+	viewHeight   int
 }
 
 func NewPlanViewModel(plan *model.Plan, inbox *model.Inbox, project *model.Project) PlanViewModel {
-	return PlanViewModel{
+	m := PlanViewModel{
 		plan:    plan,
 		inbox:   inbox,
 		project: project,
 	}
+	m.rebuildFlat()
+	return m
 }
 
 func (m *PlanViewModel) SetData(plan *model.Plan, inbox *model.Inbox, project *model.Project) {
 	m.plan = plan
 	m.inbox = inbox
 	m.project = project
+	m.rebuildFlat()
+}
+
+func (m *PlanViewModel) rebuildFlat() {
+	m.flatItems = nil
+	switch m.section {
+	case sectionWeekFocus:
+		for i, f := range m.plan.WeekFocus {
+			m.flatItems = append(m.flatItems, flatItem{section: sectionWeekFocus, focusIdx: i, subIdx: -1})
+			for si := range f.SubItems {
+				m.flatItems = append(m.flatItems, flatItem{section: sectionWeekFocus, focusIdx: i, subIdx: si})
+			}
+		}
+	case sectionToday:
+		for i := range m.plan.Today {
+			m.flatItems = append(m.flatItems, flatItem{section: sectionToday, focusIdx: i, subIdx: -1})
+		}
+	case sectionInbox:
+		if m.inbox != nil {
+			for i := range m.inbox.Items {
+				m.flatItems = append(m.flatItems, flatItem{section: sectionInbox, focusIdx: i, subIdx: -1})
+			}
+		}
+	case sectionScratch:
+		for i := range m.plan.Scratch {
+			m.flatItems = append(m.flatItems, flatItem{section: sectionScratch, focusIdx: i, subIdx: -1})
+		}
+	}
+	if m.cursorIdx >= len(m.flatItems) {
+		m.cursorIdx = len(m.flatItems) - 1
+	}
+	if m.cursorIdx < 0 {
+		m.cursorIdx = 0
+	}
 }
 
 func (m *PlanViewModel) NextSection() {
 	m.section = (m.section + 1) % sectionCount
 	m.cursorIdx = 0
 	m.scrollOffset = 0
+	m.rebuildFlat()
 }
 
 func (m *PlanViewModel) PrevSection() {
@@ -72,11 +116,11 @@ func (m *PlanViewModel) PrevSection() {
 	}
 	m.cursorIdx = 0
 	m.scrollOffset = 0
+	m.rebuildFlat()
 }
 
 func (m *PlanViewModel) CursorDown() {
-	max := m.sectionLen() - 1
-	if m.cursorIdx < max {
+	if m.cursorIdx < len(m.flatItems)-1 {
 		m.cursorIdx++
 	}
 }
@@ -87,21 +131,144 @@ func (m *PlanViewModel) CursorUp() {
 	}
 }
 
-func (m *PlanViewModel) sectionLen() int {
+// MoveUp swaps the current top-level item with the one above.
+func (m *PlanViewModel) MoveUp() bool {
+	fi := m.currentFlat()
+	if fi == nil {
+		return false
+	}
 	switch m.section {
 	case sectionWeekFocus:
-		return len(m.plan.WeekFocus)
-	case sectionToday:
-		return len(m.plan.Today)
-	case sectionInbox:
-		if m.inbox != nil {
-			return len(m.inbox.Items)
+		if fi.subIdx >= 0 {
+			// Move sub-item up within parent
+			parent := &m.plan.WeekFocus[fi.focusIdx]
+			if fi.subIdx > 0 {
+				parent.SubItems[fi.subIdx], parent.SubItems[fi.subIdx-1] = parent.SubItems[fi.subIdx-1], parent.SubItems[fi.subIdx]
+				m.cursorIdx--
+				m.rebuildFlat()
+				return true
+			}
+		} else if fi.focusIdx > 0 {
+			m.plan.WeekFocus[fi.focusIdx], m.plan.WeekFocus[fi.focusIdx-1] = m.plan.WeekFocus[fi.focusIdx-1], m.plan.WeekFocus[fi.focusIdx]
+			m.rebuildFlat()
+			// Move cursor to new position
+			m.cursorIdx = 0
+			for i, f := range m.flatItems {
+				if f.focusIdx == fi.focusIdx-1 && f.subIdx == -1 {
+					m.cursorIdx = i
+					break
+				}
+			}
+			return true
 		}
-		return 0
+	case sectionToday:
+		if fi.focusIdx > 0 {
+			m.plan.Today[fi.focusIdx], m.plan.Today[fi.focusIdx-1] = m.plan.Today[fi.focusIdx-1], m.plan.Today[fi.focusIdx]
+			m.cursorIdx--
+			m.rebuildFlat()
+			return true
+		}
 	case sectionScratch:
-		return len(m.plan.Scratch)
+		if fi.focusIdx > 0 {
+			m.plan.Scratch[fi.focusIdx], m.plan.Scratch[fi.focusIdx-1] = m.plan.Scratch[fi.focusIdx-1], m.plan.Scratch[fi.focusIdx]
+			m.cursorIdx--
+			m.rebuildFlat()
+			return true
+		}
 	}
-	return 0
+	return false
+}
+
+// MoveDown swaps the current top-level item with the one below.
+func (m *PlanViewModel) MoveDown() bool {
+	fi := m.currentFlat()
+	if fi == nil {
+		return false
+	}
+	switch m.section {
+	case sectionWeekFocus:
+		if fi.subIdx >= 0 {
+			parent := &m.plan.WeekFocus[fi.focusIdx]
+			if fi.subIdx < len(parent.SubItems)-1 {
+				parent.SubItems[fi.subIdx], parent.SubItems[fi.subIdx+1] = parent.SubItems[fi.subIdx+1], parent.SubItems[fi.subIdx]
+				m.cursorIdx++
+				m.rebuildFlat()
+				return true
+			}
+		} else if fi.focusIdx < len(m.plan.WeekFocus)-1 {
+			m.plan.WeekFocus[fi.focusIdx], m.plan.WeekFocus[fi.focusIdx+1] = m.plan.WeekFocus[fi.focusIdx+1], m.plan.WeekFocus[fi.focusIdx]
+			m.rebuildFlat()
+			m.cursorIdx = 0
+			for i, f := range m.flatItems {
+				if f.focusIdx == fi.focusIdx+1 && f.subIdx == -1 {
+					m.cursorIdx = i
+					break
+				}
+			}
+			return true
+		}
+	case sectionToday:
+		if fi.focusIdx < len(m.plan.Today)-1 {
+			m.plan.Today[fi.focusIdx], m.plan.Today[fi.focusIdx+1] = m.plan.Today[fi.focusIdx+1], m.plan.Today[fi.focusIdx]
+			m.cursorIdx++
+			m.rebuildFlat()
+			return true
+		}
+	case sectionScratch:
+		if fi.focusIdx < len(m.plan.Scratch)-1 {
+			m.plan.Scratch[fi.focusIdx], m.plan.Scratch[fi.focusIdx+1] = m.plan.Scratch[fi.focusIdx+1], m.plan.Scratch[fi.focusIdx]
+			m.cursorIdx++
+			m.rebuildFlat()
+			return true
+		}
+	}
+	return false
+}
+
+// ToggleDone handles Enter — toggles done on Today items or breakdown sub-items.
+func (m *PlanViewModel) ToggleDone() (string, bool) {
+	fi := m.currentFlat()
+	if fi == nil {
+		return "", false
+	}
+	switch m.section {
+	case sectionWeekFocus:
+		if fi.subIdx >= 0 {
+			sub := &m.plan.WeekFocus[fi.focusIdx].SubItems[fi.subIdx]
+			sub.Done = !sub.Done
+			m.rebuildFlat()
+			if sub.Done {
+				return fmt.Sprintf("Completed: %s", sub.Text), true
+			}
+			return fmt.Sprintf("Uncompleted: %s", sub.Text), true
+		}
+	case sectionToday:
+		item := &m.plan.Today[fi.focusIdx]
+		item.Done = !item.Done
+		m.rebuildFlat()
+		if item.Done {
+			return fmt.Sprintf("Completed: %s", item.Text), true
+		}
+		return fmt.Sprintf("Uncompleted: %s", item.Text), true
+	}
+	return "", false
+}
+
+// PromoteToCurrent returns the sub-item text if cursor is on a breakdown item.
+func (m *PlanViewModel) PromoteItem() (*model.SubItem, int, bool) {
+	fi := m.currentFlat()
+	if fi == nil || m.section != sectionWeekFocus || fi.subIdx < 0 {
+		return nil, 0, false
+	}
+	sub := &m.plan.WeekFocus[fi.focusIdx].SubItems[fi.subIdx]
+	return sub, fi.focusIdx, true
+}
+
+func (m *PlanViewModel) currentFlat() *flatItem {
+	if m.cursorIdx < 0 || m.cursorIdx >= len(m.flatItems) {
+		return nil
+	}
+	return &m.flatItems[m.cursorIdx]
 }
 
 func (m *PlanViewModel) resolveIssue(num int) *model.ProjectItem {
@@ -147,133 +314,150 @@ func (m PlanViewModel) View(width, height int) string {
 	sb.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, tabs...))
 	sb.WriteString("\n\n")
 
-	switch m.section {
-	case sectionWeekFocus:
-		sb.WriteString(m.renderWeekFocus(width))
-	case sectionToday:
-		sb.WriteString(m.renderToday(width))
-	case sectionInbox:
-		sb.WriteString(m.renderInbox(width))
-	case sectionScratch:
-		sb.WriteString(m.renderScratch(width))
-	}
-
-	return sb.String()
-}
-
-func (m PlanViewModel) renderWeekFocus(width int) string {
-	var sb strings.Builder
-	if len(m.plan.WeekFocus) == 0 {
-		sb.WriteString(helpStyle.Render("  No weekly focus items. Use :goal or :pin to add."))
+	if len(m.flatItems) == 0 {
+		hints := map[planSection]string{
+			sectionWeekFocus: "  No weekly focus items. Use :goal or :pin to add.",
+			sectionToday:     "  No tasks for today. Use :today to add.",
+			sectionInbox:     "  Inbox empty. External processes can write to inbox.yaml.",
+			sectionScratch:   "  No scratch notes. Use :scratch to jot something down.",
+		}
+		sb.WriteString(helpStyle.Render(hints[m.section]))
 		return sb.String()
 	}
-	for i, item := range m.plan.WeekFocus {
+
+	for i, fi := range m.flatItems {
 		cursor := "  "
 		if i == m.cursorIdx {
 			cursor = cursorStyle.Render("► ")
 		}
-		lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
-			Render(fmt.Sprintf("%d", i+1))
 
-		if item.IssueNum > 0 {
-			// Pinned issue — show live status
-			num := issueNumStyle.Render(fmt.Sprintf("#%d", item.IssueNum))
-			status := ""
-			title := item.Text
-			if pi := m.resolveIssue(item.IssueNum); pi != nil {
-				title = pi.Title
-				status = "  " + renderStatus(pi.Status)
+		switch m.section {
+		case sectionWeekFocus:
+			if fi.subIdx == -1 {
+				sb.WriteString(m.renderFocusItem(cursor, fi.focusIdx))
+			} else {
+				sb.WriteString(m.renderSubItem(cursor, fi.focusIdx, fi.subIdx))
 			}
-			sb.WriteString(fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, num, issueTitleStyle.Render(title), status))
-		} else {
-			sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, lineNo, item.Text))
+		case sectionToday:
+			sb.WriteString(m.renderTodoItem(cursor, fi.focusIdx))
+		case sectionInbox:
+			sb.WriteString(m.renderInboxItem(cursor, fi.focusIdx))
+		case sectionScratch:
+			sb.WriteString(m.renderScratchItem(cursor, fi.focusIdx))
 		}
 	}
+
 	return sb.String()
 }
 
-func (m PlanViewModel) renderToday(width int) string {
-	var sb strings.Builder
-	if len(m.plan.Today) == 0 {
-		sb.WriteString(helpStyle.Render("  No tasks for today. Use :today to add."))
-		return sb.String()
+func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
+	item := m.plan.WeekFocus[idx]
+	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+		Render(fmt.Sprintf("%d", idx+1))
+
+	if item.IssueNum > 0 {
+		num := issueNumStyle.Render(fmt.Sprintf("#%d", item.IssueNum))
+		status := ""
+		title := item.Text
+		if pi := m.resolveIssue(item.IssueNum); pi != nil {
+			title = pi.Title
+			status = "  " + renderStatus(pi.Status)
+		}
+		subCount := ""
+		if len(item.SubItems) > 0 {
+			done := 0
+			for _, s := range item.SubItems {
+				if s.Done {
+					done++
+				}
+			}
+			subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
+		}
+		return fmt.Sprintf("%s%s %s %s%s%s\n", cursor, lineNo, num, issueTitleStyle.Render(title), status, subCount)
 	}
-	for i, item := range m.plan.Today {
-		cursor := "  "
-		if i == m.cursorIdx {
-			cursor = cursorStyle.Render("► ")
-		}
-		lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
-			Render(fmt.Sprintf("%d", i+1))
 
-		check := "[ ]"
-		textStyle := issueTitleStyle
-		if item.Done {
-			check = "[x]"
-			textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
-		}
-
-		text := item.Text
-		if item.IssueNum > 0 {
-			if pi := m.resolveIssue(item.IssueNum); pi != nil {
-				text = fmt.Sprintf("#%d %s", item.IssueNum, pi.Title)
+	subCount := ""
+	if len(item.SubItems) > 0 {
+		done := 0
+		for _, s := range item.SubItems {
+			if s.Done {
+				done++
 			}
 		}
-
-		sb.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, lineNo, check, textStyle.Render(text)))
+		subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 	}
-	return sb.String()
+	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, item.Text, subCount)
 }
 
-func (m PlanViewModel) renderInbox(width int) string {
-	var sb strings.Builder
-	if m.inbox == nil || len(m.inbox.Items) == 0 {
-		sb.WriteString(helpStyle.Render("  Inbox empty. External processes can write to inbox.yaml."))
-		return sb.String()
-	}
-	for i, item := range m.inbox.Items {
-		cursor := "  "
-		if i == m.cursorIdx {
-			cursor = cursorStyle.Render("► ")
-		}
-		lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
-			Render(fmt.Sprintf("%d", i+1))
+func (m PlanViewModel) renderSubItem(cursor string, focusIdx, subIdx int) string {
+	sub := m.plan.WeekFocus[focusIdx].SubItems[subIdx]
+	indent := "      " // indent under parent
 
-		age := ""
-		if !item.CreatedAt.IsZero() {
-			age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(item.CreatedAt)))
-		}
-		from := ""
-		if item.From != "" {
-			from = commentAuthorStyle.Render(item.From+": ")
-		}
-
-		sb.WriteString(fmt.Sprintf("%s%s %s%s%s\n", cursor, lineNo, from, item.Text, age))
+	check := "[ ]"
+	textStyle := issueTitleStyle
+	if sub.Done {
+		check = "[x]"
+		textStyle = lipgloss.NewStyle().Foreground(colorSuccess)
 	}
-	return sb.String()
+
+	text := sub.Text
+	if sub.IssueNum > 0 {
+		if pi := m.resolveIssue(sub.IssueNum); pi != nil {
+			text = fmt.Sprintf("#%d %s", sub.IssueNum, pi.Title)
+		}
+	}
+
+	return fmt.Sprintf("%s%s%s %s\n", cursor, indent, check, textStyle.Render(text))
 }
 
-func (m PlanViewModel) renderScratch(width int) string {
-	var sb strings.Builder
-	if len(m.plan.Scratch) == 0 {
-		sb.WriteString(helpStyle.Render("  No scratch notes. Use :scratch to jot something down."))
-		return sb.String()
-	}
-	for i, note := range m.plan.Scratch {
-		cursor := "  "
-		if i == m.cursorIdx {
-			cursor = cursorStyle.Render("► ")
-		}
-		lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
-			Render(fmt.Sprintf("%d", i+1))
+func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
+	item := m.plan.Today[idx]
+	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+		Render(fmt.Sprintf("%d", idx+1))
 
-		age := ""
-		if !note.CreatedAt.IsZero() {
-			age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(note.CreatedAt)))
-		}
-
-		_ = time.Now() // ensure time import
-		sb.WriteString(fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, note.Text, age))
+	check := "[ ]"
+	textStyle := issueTitleStyle
+	if item.Done {
+		check = "[x]"
+		textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
 	}
-	return sb.String()
+
+	text := item.Text
+	if item.IssueNum > 0 {
+		if pi := m.resolveIssue(item.IssueNum); pi != nil {
+			text = fmt.Sprintf("#%d %s", item.IssueNum, pi.Title)
+		}
+	}
+
+	return fmt.Sprintf("%s%s %s %s\n", cursor, lineNo, check, textStyle.Render(text))
+}
+
+func (m PlanViewModel) renderInboxItem(cursor string, idx int) string {
+	item := m.inbox.Items[idx]
+	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+		Render(fmt.Sprintf("%d", idx+1))
+
+	age := ""
+	if !item.CreatedAt.IsZero() {
+		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(item.CreatedAt)))
+	}
+	from := ""
+	if item.From != "" {
+		from = commentAuthorStyle.Render(item.From+": ")
+	}
+
+	return fmt.Sprintf("%s%s %s%s%s\n", cursor, lineNo, from, item.Text, age)
+}
+
+func (m PlanViewModel) renderScratchItem(cursor string, idx int) string {
+	note := m.plan.Scratch[idx]
+	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+		Render(fmt.Sprintf("%d", idx+1))
+
+	age := ""
+	if !note.CreatedAt.IsZero() {
+		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(note.CreatedAt)))
+	}
+
+	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, note.Text, age)
 }

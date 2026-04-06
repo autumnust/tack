@@ -9,7 +9,8 @@ type TeamMember struct {
 }
 
 type PlanningConfig struct {
-	Dir string `yaml:"dir"` // directory for planning files (plan.yaml, annotations.yaml, inbox.yaml, scratch.md)
+	Dir          string `yaml:"dir"`
+	MaxWeekFocus int    `yaml:"max_week_focus,omitempty"` // max weekly focus items (default 3)
 }
 
 type Config struct {

@@ -11,10 +11,18 @@ type Plan struct {
 
 // FocusItem is a weekly focus entry — either a freeform goal or a pinned GitHub issue.
 type FocusItem struct {
-	Text      string `yaml:"text,omitempty"`       // freeform goal description
-	IssueNum  int    `yaml:"issue_num,omitempty"`   // pinned GitHub issue number (0 if freeform)
-	IssueRepo string `yaml:"issue_repo,omitempty"`  // repo for the pinned issue
-	Pinned    bool   `yaml:"pinned,omitempty"`      // true if pinned from standup mode
+	Text      string    `yaml:"text,omitempty"`
+	IssueNum  int       `yaml:"issue_num,omitempty"`
+	IssueRepo string    `yaml:"issue_repo,omitempty"`
+	Pinned    bool      `yaml:"pinned,omitempty"`
+	SubItems  []SubItem `yaml:"sub_items,omitempty"` // breakdown items
+}
+
+// SubItem is a breakdown task under a weekly focus goal.
+type SubItem struct {
+	Text     string `yaml:"text"`
+	Done     bool   `yaml:"done,omitempty"`
+	IssueNum int    `yaml:"issue_num,omitempty"` // optional linked issue
 }
 
 // TodoItem is a daily task.

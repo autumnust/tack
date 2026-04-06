@@ -81,7 +81,7 @@ type pushDoneMsg struct {
 
 const cacheTTL = 5 * time.Minute
 
-func NewApp(config model.Config, configPath string, client *github.Client) AppModel {
+func NewApp(config model.Config, configPath string, client *github.Client, startInPlanMode ...bool) AppModel {
 	app := AppModel{
 		config:     config,
 		configPath: configPath,
@@ -141,6 +141,12 @@ func NewApp(config model.Config, configPath string, client *github.Client) AppMo
 		age := time.Since(cached.FetchedAt).Truncate(time.Second)
 		app.statusMsg = fmt.Sprintf("Loaded %d items from cache (%s old)", len(project.Items), age)
 		app.cacheStale = age > cacheTTL
+	}
+
+	if len(startInPlanMode) > 0 && startInPlanMode[0] {
+		app.planView = NewPlanViewModel(app.plan, app.inbox, app.project)
+		app.view = viewPlan
+		app.statusMsg = "Planning mode"
 	}
 
 	return app
@@ -673,6 +679,10 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdScratch(cmd.Args)
 	case "inbox":
 		return m.cmdInbox(cmd.Args)
+	case "sub":
+		return m.cmdSub(cmd.Args)
+	case "promote":
+		return m.cmdPromote(cmd.Args)
 	case "del", "delete":
 		return m.cmdDelete(cmd.Args)
 	case "undo":
@@ -1144,10 +1154,13 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		section("Planning Mode"),
 		"  " + key("Tab / h / l") + "Switch section (Week/Today/Inbox/Scratch)",
 		"  " + key("j / k") + "Navigate items",
-		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N)",
+		"  " + key("J / K") + "Reorder items (move up/down)",
+		"  " + key("Enter") + "Toggle done (today items / breakdown items)",
+		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
+		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
+		"  " + key(":promote") + "Promote breakdown item to today",
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
-		"  " + key(":done") + "Toggle done on selected today item",
-		"  " + key(":done N") + "Toggle done by line number",
+		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":scratch \"note\"") + "Add scratch note",
 		"  " + key(":del") + "Delete selected item",
 		"  " + key(":inbox clear") + "Clear inbox",
@@ -1208,6 +1221,18 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.planView.CursorDown()
 	case "k", "up":
 		m.planView.CursorUp()
+	case "J":
+		if m.planView.MoveDown() {
+			m.statusMsg = "Moved down"
+		}
+	case "K":
+		if m.planView.MoveUp() {
+			m.statusMsg = "Moved up"
+		}
+	case "enter":
+		if msg, ok := m.planView.ToggleDone(); ok {
+			m.statusMsg = msg
+		}
 	}
 	return m, nil
 }
@@ -1302,6 +1327,11 @@ func (m AppModel) cmdPin(args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.weekFocusFull() {
+		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d). Use :del to remove one first.", len(m.plan.WeekFocus), m.maxWeekFocus())
+		return m, nil
+	}
+
 	m.plan.WeekFocus = append(m.plan.WeekFocus, model.FocusItem{
 		Text:      title,
 		IssueNum:  issueNum,
@@ -1315,15 +1345,30 @@ func (m AppModel) cmdPin(args []string) (tea.Model, tea.Cmd) {
 
 // --- Planning mode commands ---
 
+func (m AppModel) maxWeekFocus() int {
+	if m.config.Planning.MaxWeekFocus > 0 {
+		return m.config.Planning.MaxWeekFocus
+	}
+	return 3
+}
+
+func (m AppModel) weekFocusFull() bool {
+	return len(m.plan.WeekFocus) >= m.maxWeekFocus()
+}
+
 func (m AppModel) cmdGoal(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.statusMsg = "Usage: :goal \"description\" or :goal #N"
 		return m, nil
 	}
 
-	// Check if it's an issue reference
 	if strings.HasPrefix(args[0], "#") {
 		return m.cmdPin(args)
+	}
+
+	if m.weekFocusFull() {
+		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d). Use :del to remove one first.", len(m.plan.WeekFocus), m.maxWeekFocus())
+		return m, nil
 	}
 
 	text := strings.Join(args, " ")
@@ -1428,6 +1473,73 @@ func (m AppModel) cmdInbox(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.statusMsg = fmt.Sprintf("Unknown inbox command: %s", args[0])
+	return m, nil
+}
+
+func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :sub \"breakdown task\" (adds to selected week focus item)"
+		return m, nil
+	}
+
+	// Determine which focus item to add to
+	focusIdx := -1
+	if m.view == viewPlan && m.planView.section == sectionWeekFocus {
+		fi := m.planView.currentFlat()
+		if fi != nil {
+			focusIdx = fi.focusIdx
+		}
+	}
+
+	if focusIdx < 0 || focusIdx >= len(m.plan.WeekFocus) {
+		m.statusMsg = "Navigate to a week focus item first"
+		return m, nil
+	}
+
+	text := strings.Join(args, " ")
+	sub := model.SubItem{Text: text}
+
+	// Check if it's an issue ref
+	if strings.HasPrefix(args[0], "#") {
+		numStr := strings.TrimPrefix(args[0], "#")
+		if n, err := strconv.Atoi(numStr); err == nil {
+			sub.IssueNum = n
+			if len(args) > 1 {
+				sub.Text = strings.Join(args[1:], " ")
+			} else {
+				for _, pi := range m.project.Items {
+					if pi.Number == n {
+						sub.Text = pi.Title
+						break
+					}
+				}
+			}
+		}
+	}
+
+	m.plan.WeekFocus[focusIdx].SubItems = append(m.plan.WeekFocus[focusIdx].SubItems, sub)
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.statusMsg = fmt.Sprintf("Added breakdown to goal %d: %s", focusIdx+1, sub.Text)
+	return m, nil
+}
+
+func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
+	sub, _, ok := m.planView.PromoteItem()
+	if !ok {
+		m.statusMsg = "Navigate to a breakdown item under week focus to promote"
+		return m, nil
+	}
+
+	// Mark as done in breakdown
+	sub.Done = true
+
+	// Add to Today
+	m.plan.Today = append(m.plan.Today, model.TodoItem{
+		Text:     sub.Text,
+		IssueNum: sub.IssueNum,
+	})
+	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.statusMsg = fmt.Sprintf("Promoted to today: %s", sub.Text)
 	return m, nil
 }
 

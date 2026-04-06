@@ -15,6 +15,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
+	planMode := flag.Bool("plan", false, "start in planning mode")
 	flag.Parse()
 
 	config, err := loadConfig(*configPath)
@@ -29,7 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := tui.NewApp(config, *configPath, client)
+	app := tui.NewApp(config, *configPath, client, *planMode)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
