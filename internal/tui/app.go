@@ -50,6 +50,7 @@ type AppModel struct {
 
 	// View state
 	view     viewMode
+	prevView viewMode // for returning from detail/help
 	board    BoardModel
 	detail   DetailModel
 	command  CommandModel
@@ -512,6 +513,7 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		result := m.board.ToggleOrSelect()
 		if result != nil {
+			m.prevView = m.view
 			m.view = viewDetail
 			if result.Issue != nil {
 				m.detail = m.buildDetailModel(result.Issue)
@@ -532,7 +534,7 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m AppModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "backspace":
-		m.view = viewBoard
+		m.view = m.prevView
 		return m, nil
 	case "j", "down":
 		if m.detail.HasNav() {
@@ -1191,6 +1193,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		Title: "Help",
 		Body:  strings.Join(lines, "\n"),
 	}
+	m.prevView = m.view
 	m.view = viewDetail
 	// Build detail manually to skip glamour rendering
 	m.detail = newDetailPrerendered(helpIssue, strings.Join(lines, "\n"), m.width, m.height)
@@ -1605,6 +1608,7 @@ func (m AppModel) cmdStats() (tea.Model, tea.Cmd) {
 	}
 
 	helpIssue := &model.ProjectItem{Title: "Stats", Body: strings.Join(lines, "\n")}
+	m.prevView = m.view
 	m.view = viewDetail
 	m.detail = newDetailPrerendered(helpIssue, strings.Join(lines, "\n"), m.width, m.height)
 	return m, nil
@@ -1685,6 +1689,7 @@ func (m AppModel) cmdRecap() (tea.Model, tea.Cmd) {
 
 	// Display in detail view
 	helpIssue := &model.ProjectItem{Title: "Recap", Body: recap}
+	m.prevView = m.view
 	m.view = viewDetail
 	m.detail = NewDetailModel(helpIssue, m.width, m.height, nil)
 	m.statusMsg = fmt.Sprintf("Recap saved to recaps/%s.md", weekNum)
