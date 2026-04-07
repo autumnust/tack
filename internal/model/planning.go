@@ -6,6 +6,7 @@ import "time"
 type Plan struct {
 	WeekFocus []FocusItem   `yaml:"week_focus,omitempty"`
 	Today     []TodoItem    `yaml:"today,omitempty"`
+	Completed []TodoItem    `yaml:"completed,omitempty"` // archived done items from previous days
 	Scratch   []ScratchNote `yaml:"scratch,omitempty"`
 }
 
@@ -27,9 +28,11 @@ type SubItem struct {
 
 // TodoItem is a daily task.
 type TodoItem struct {
-	Text     string `yaml:"text"`
-	Done     bool   `yaml:"done,omitempty"`
-	IssueNum int    `yaml:"issue_num,omitempty"` // optional linked issue
+	Text      string    `yaml:"text"`
+	Done      bool      `yaml:"done,omitempty"`
+	IssueNum  int       `yaml:"issue_num,omitempty"`
+	CreatedAt time.Time `yaml:"created_at,omitempty"`
+	DoneAt    time.Time `yaml:"done_at,omitempty"`
 }
 
 // ScratchNote is a freeform note.

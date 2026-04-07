@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/standup-kanban/standup-kanban/internal/model"
@@ -245,6 +246,11 @@ func (m *PlanViewModel) ToggleDone() (string, bool) {
 	case sectionToday:
 		item := &m.plan.Today[fi.focusIdx]
 		item.Done = !item.Done
+		if item.Done {
+			item.DoneAt = time.Now()
+		} else {
+			item.DoneAt = time.Time{}
+		}
 		m.rebuildFlat()
 		if item.Done {
 			return fmt.Sprintf("Completed: %s", item.Text), true
@@ -417,9 +423,23 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 
 	check := "[ ]"
 	textStyle := issueTitleStyle
+	overdueTag := ""
+
 	if item.Done {
 		check = "[x]"
 		textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
+	} else if !item.CreatedAt.IsZero() {
+		now := time.Now()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		itemDate := time.Date(item.CreatedAt.Year(), item.CreatedAt.Month(), item.CreatedAt.Day(), 0, 0, 0, 0, item.CreatedAt.Location())
+		days := int(today.Sub(itemDate).Hours() / 24)
+		if days == 1 {
+			textStyle = lipgloss.NewStyle().Foreground(colorWarning)
+			overdueTag = lipgloss.NewStyle().Foreground(colorWarning).Render(" (carry-over)")
+		} else if days >= 2 {
+			textStyle = lipgloss.NewStyle().Foreground(colorDanger).Bold(true)
+			overdueTag = lipgloss.NewStyle().Foreground(colorDanger).Bold(true).Render(fmt.Sprintf(" (%dd overdue)", days))
+		}
 	}
 
 	text := item.Text
@@ -429,7 +449,7 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 		}
 	}
 
-	return fmt.Sprintf("%s%s %s %s\n", cursor, lineNo, check, textStyle.Render(text))
+	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), overdueTag)
 }
 
 func (m PlanViewModel) renderInboxItem(cursor string, idx int) string {

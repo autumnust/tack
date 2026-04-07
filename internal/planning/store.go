@@ -1,9 +1,11 @@
 package planning
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/standup-kanban/standup-kanban/internal/model"
 	"gopkg.in/yaml.v3"
@@ -101,7 +103,75 @@ func (s *Store) ClearInbox() error {
 	return s.SaveInbox(&model.Inbox{})
 }
 
+// Rollover archives done items from previous days and keeps undone items
+// with their original CreatedAt so the UI can show overdue signals.
+func (s *Store) Rollover(plan *model.Plan) {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	var kept []model.TodoItem
+	for _, item := range plan.Today {
+		// Ensure CreatedAt is set
+		if item.CreatedAt.IsZero() {
+			item.CreatedAt = now
+		}
+
+		itemDate := time.Date(item.CreatedAt.Year(), item.CreatedAt.Month(), item.CreatedAt.Day(), 0, 0, 0, 0, item.CreatedAt.Location())
+
+		if item.Done && itemDate.Before(today) {
+			// Done + from a previous day → archive
+			plan.Completed = append(plan.Completed, item)
+		} else {
+			kept = append(kept, item)
+		}
+	}
+	plan.Today = kept
+}
+
+// Usage log
+
+func (s *Store) usagePath() string { return filepath.Join(s.dir, "usage.log") }
+func (s *Store) recapsDir() string { return filepath.Join(s.dir, "recaps") }
+
+func (s *Store) LogUsage(command string) {
+	f, err := os.OpenFile(s.usagePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s\t%s\n", time.Now().Format(time.RFC3339), command)
+}
+
+func (s *Store) LoadUsageStats() (map[string]int, error) {
+	data, err := os.ReadFile(s.usagePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]int{}, nil
+		}
+		return nil, err
+	}
+	stats := make(map[string]int)
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 {
+			stats[parts[1]]++
+		}
+	}
+	return stats, nil
+}
+
+// Recaps
+
+func (s *Store) SaveRecap(name string, content string) error {
+	dir := s.recapsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0644)
+}
+
 // helpers
+
 
 func (s *Store) loadYAML(path string, v interface{}) error {
 	data, err := os.ReadFile(path)

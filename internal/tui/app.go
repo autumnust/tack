@@ -109,6 +109,7 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	if store, err := planning.NewStore(planDir); err == nil {
 		app.planStore = store
 		if plan, err := store.LoadPlan(); err == nil {
+			store.Rollover(plan) // archive done items from previous days
 			app.plan = plan
 		} else {
 			app.plan = &model.Plan{}
@@ -642,6 +643,11 @@ func (m AppModel) openInBrowser() (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
+	// Log command usage
+	if m.planStore != nil {
+		m.planStore.LogUsage(":" + cmd.Action)
+	}
+
 	switch cmd.Action {
 	case "mv", "move":
 		return m.cmdMove(cmd.Args)
@@ -685,6 +691,10 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdPromote(cmd.Args)
 	case "del", "delete":
 		return m.cmdDelete(cmd.Args)
+	case "stats":
+		return m.cmdStats()
+	case "recap":
+		return m.cmdRecap()
 	case "undo":
 		return m.cmdUndo()
 	case "h", "help":
@@ -1164,6 +1174,8 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":scratch \"note\"") + "Add scratch note",
 		"  " + key(":del") + "Delete selected item",
 		"  " + key(":inbox clear") + "Clear inbox",
+		"  " + key(":recap") + "Generate weekly recap",
+		"  " + key(":stats") + "Show command usage stats",
 		"",
 		section("Global"),
 		"  " + key("r") + "Refresh from GitHub",
@@ -1384,7 +1396,7 @@ func (m AppModel) cmdToday(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	item := model.TodoItem{Text: strings.Join(args, " ")}
+	item := model.TodoItem{Text: strings.Join(args, " "), CreatedAt: time.Now()}
 
 	// Check if first arg is an issue reference
 	if strings.HasPrefix(args[0], "#") {
@@ -1540,6 +1552,142 @@ func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
 	})
 	m.planView.SetData(m.plan, m.inbox, m.project)
 	m.statusMsg = fmt.Sprintf("Promoted to today: %s", sub.Text)
+	return m, nil
+}
+
+func (m AppModel) cmdStats() (tea.Model, tea.Cmd) {
+	if m.planStore == nil {
+		m.statusMsg = "No planning store configured"
+		return m, nil
+	}
+	stats, err := m.planStore.LoadUsageStats()
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error loading stats: %s", err)
+		return m, nil
+	}
+	if len(stats) == 0 {
+		m.statusMsg = "No usage data yet"
+		return m, nil
+	}
+
+	// Sort by frequency
+	type entry struct {
+		cmd   string
+		count int
+	}
+	var entries []entry
+	for cmd, count := range stats {
+		entries = append(entries, entry{cmd, count})
+	}
+	// Simple sort (descending)
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].count > entries[i].count {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	section := func(title string) string {
+		return epicStyle.Render(title)
+	}
+	key := func(k string) string {
+		return cursorStyle.Render(fmt.Sprintf("%-20s", k))
+	}
+
+	var lines []string
+	lines = append(lines, detailHeaderStyle.Render("Command Usage Stats"))
+	lines = append(lines, "")
+	lines = append(lines, section("Command Frequency"))
+	for _, e := range entries {
+		bar := strings.Repeat("█", min(e.count, 40))
+		lines = append(lines, fmt.Sprintf("  %s %s %d", key(e.cmd), lipgloss.NewStyle().Foreground(colorSecondary).Render(bar), e.count))
+	}
+
+	helpIssue := &model.ProjectItem{Title: "Stats", Body: strings.Join(lines, "\n")}
+	m.view = viewDetail
+	m.detail = newDetailPrerendered(helpIssue, strings.Join(lines, "\n"), m.width, m.height)
+	return m, nil
+}
+
+func (m AppModel) cmdRecap() (tea.Model, tea.Cmd) {
+	if m.planStore == nil {
+		m.statusMsg = "No planning store configured"
+		return m, nil
+	}
+
+	var sb strings.Builder
+	now := time.Now()
+	weekNum := fmt.Sprintf("%d-W%02d", now.Year(), (now.YearDay()+6)/7)
+
+	sb.WriteString(fmt.Sprintf("# Weekly Recap — %s\n\n", weekNum))
+
+	// Week Focus summary
+	sb.WriteString("## Week Focus\n\n")
+	if len(m.plan.WeekFocus) == 0 {
+		sb.WriteString("No weekly goals set.\n\n")
+	}
+	for _, f := range m.plan.WeekFocus {
+		title := f.Text
+		if f.IssueNum > 0 {
+			title = fmt.Sprintf("#%d %s", f.IssueNum, f.Text)
+		}
+		done := 0
+		total := len(f.SubItems)
+		for _, s := range f.SubItems {
+			if s.Done {
+				done++
+			}
+		}
+		progress := ""
+		if total > 0 {
+			progress = fmt.Sprintf(" [%d/%d]", done, total)
+		}
+		sb.WriteString(fmt.Sprintf("- %s%s\n", title, progress))
+		for _, s := range f.SubItems {
+			check := "[ ]"
+			if s.Done {
+				check = "[x]"
+			}
+			sb.WriteString(fmt.Sprintf("  - %s %s\n", check, s.Text))
+		}
+	}
+
+	// Completed items
+	sb.WriteString("\n## Completed This Week\n\n")
+	if len(m.plan.Completed) == 0 {
+		sb.WriteString("No completed items.\n\n")
+	}
+	for _, item := range m.plan.Completed {
+		sb.WriteString(fmt.Sprintf("- [x] %s\n", item.Text))
+	}
+
+	// Carry-over (undone items)
+	sb.WriteString("\n## Carry-Over (Unfinished)\n\n")
+	hasCarryOver := false
+	for _, item := range m.plan.Today {
+		if !item.Done {
+			sb.WriteString(fmt.Sprintf("- [ ] %s\n", item.Text))
+			hasCarryOver = true
+		}
+	}
+	if !hasCarryOver {
+		sb.WriteString("All clear!\n")
+	}
+
+	recap := sb.String()
+
+	// Save to file
+	if err := m.planStore.SaveRecap(weekNum, recap); err != nil {
+		m.statusMsg = fmt.Sprintf("Recap error: %s", err)
+		return m, nil
+	}
+
+	// Display in detail view
+	helpIssue := &model.ProjectItem{Title: "Recap", Body: recap}
+	m.view = viewDetail
+	m.detail = NewDetailModel(helpIssue, m.width, m.height, nil)
+	m.statusMsg = fmt.Sprintf("Recap saved to recaps/%s.md", weekNum)
 	return m, nil
 }
 
