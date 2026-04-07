@@ -50,6 +50,7 @@ type PlanViewModel struct {
 	cursorIdx    int
 	scrollOffset int
 	viewHeight   int
+	width        int
 }
 
 func NewPlanViewModel(plan *model.Plan, inbox *model.Inbox, project *model.Project) PlanViewModel {
@@ -291,6 +292,7 @@ func (m *PlanViewModel) resolveIssue(num int) *model.ProjectItem {
 
 func (m PlanViewModel) View(width, height int) string {
 	m.viewHeight = height - 6
+	m.width = width
 
 	var sb strings.Builder
 
@@ -356,6 +358,48 @@ func (m PlanViewModel) View(width, height int) string {
 	return sb.String()
 }
 
+// wrapText wraps long text to fit within maxWidth, indenting continuation lines.
+func wrapText(text string, indent int, maxWidth int) string {
+	if maxWidth <= indent+10 {
+		return text // too narrow to wrap meaningfully
+	}
+	contentWidth := maxWidth - indent
+	if len(text) <= contentWidth {
+		return text
+	}
+
+	var lines []string
+	remaining := text
+	for len(remaining) > 0 {
+		if len(remaining) <= contentWidth {
+			lines = append(lines, remaining)
+			break
+		}
+		// Find last space within contentWidth
+		cut := contentWidth
+		for cut > contentWidth/2 {
+			if remaining[cut] == ' ' {
+				break
+			}
+			cut--
+		}
+		if cut <= contentWidth/2 {
+			cut = contentWidth // no good break point, hard cut
+		}
+		lines = append(lines, remaining[:cut])
+		remaining = remaining[cut:]
+		if len(remaining) > 0 && remaining[0] == ' ' {
+			remaining = remaining[1:]
+		}
+	}
+
+	if len(lines) <= 1 {
+		return text
+	}
+	pad := strings.Repeat(" ", indent)
+	return lines[0] + "\n" + pad + strings.Join(lines[1:], "\n"+pad)
+}
+
 func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 	item := m.plan.WeekFocus[idx]
 	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
@@ -379,7 +423,8 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 			}
 			subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 		}
-		return fmt.Sprintf("%s%s %s %s%s%s\n", cursor, lineNo, num, issueTitleStyle.Render(title), status, subCount)
+		wrappedTitle := wrapText(title, 10, m.width)
+		return fmt.Sprintf("%s%s %s %s%s%s\n", cursor, lineNo, num, issueTitleStyle.Render(wrappedTitle), status, subCount)
 	}
 
 	subCount := ""
@@ -392,7 +437,8 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 		}
 		subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 	}
-	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, item.Text, subCount)
+	wrappedText := wrapText(item.Text, 8, m.width)
+	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, wrappedText, subCount)
 }
 
 func (m PlanViewModel) renderSubItem(cursor string, focusIdx, subIdx int) string {
@@ -413,7 +459,8 @@ func (m PlanViewModel) renderSubItem(cursor string, focusIdx, subIdx int) string
 		}
 	}
 
-	return fmt.Sprintf("%s%s%s %s\n", cursor, indent, check, textStyle.Render(text))
+	wrapped := wrapText(text, 14, m.width)
+	return fmt.Sprintf("%s%s%s %s\n", cursor, indent, check, textStyle.Render(wrapped))
 }
 
 func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
@@ -449,7 +496,8 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 		}
 	}
 
-	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), overdueTag)
+	wrapped := wrapText(text, 12, m.width)
+	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(wrapped), overdueTag)
 }
 
 func (m PlanViewModel) renderInboxItem(cursor string, idx int) string {
@@ -466,7 +514,8 @@ func (m PlanViewModel) renderInboxItem(cursor string, idx int) string {
 		from = commentAuthorStyle.Render(item.From+": ")
 	}
 
-	return fmt.Sprintf("%s%s %s%s%s\n", cursor, lineNo, from, item.Text, age)
+	text := wrapText(item.Text, 8, m.width)
+	return fmt.Sprintf("%s%s %s%s%s\n", cursor, lineNo, from, text, age)
 }
 
 func (m PlanViewModel) renderScratchItem(cursor string, idx int) string {
@@ -479,5 +528,6 @@ func (m PlanViewModel) renderScratchItem(cursor string, idx int) string {
 		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(note.CreatedAt)))
 	}
 
-	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, note.Text, age)
+	text := wrapText(note.Text, 8, m.width)
+	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, text, age)
 }
