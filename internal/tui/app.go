@@ -155,6 +155,20 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 }
 
 func (m AppModel) Init() tea.Cmd {
+	if m.view == viewPlan {
+		// Planning mode doesn't need GitHub data to start.
+		// If we have cached data, great (pinned issues show status).
+		// Fetch in background either way so data is ready if user switches to board.
+		m.loading = false
+		if m.project == nil {
+			// No cache — fetch in background, but don't block
+			return m.fetchData()
+		}
+		if m.cacheStale {
+			return m.fetchData()
+		}
+		return nil
+	}
 	if !m.loading && m.cacheStale {
 		// Have cached data but it's stale — background refresh
 		return m.fetchData()
@@ -1752,7 +1766,7 @@ func (m AppModel) View() string {
 		return fmt.Sprintf("\n  Error: %s\n\n  Check your config.yaml and GitHub authentication.\n  Press q to quit.\n", m.err)
 	}
 
-	if m.loading {
+	if m.loading && m.view != viewPlan {
 		return "\n  Loading project data from GitHub...\n"
 	}
 
