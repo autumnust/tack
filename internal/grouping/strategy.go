@@ -3,7 +3,7 @@ package grouping
 import (
 	"sort"
 
-	"github.com/standup-kanban/standup-kanban/internal/model"
+	"github.com/autumnust/tack/internal/model"
 )
 
 // Strategy defines how issues within a person are grouped.

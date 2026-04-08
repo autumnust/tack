@@ -1,4 +1,4 @@
-module github.com/standup-kanban/standup-kanban
+module github.com/autumnust/tack
 
 go 1.26.1
 

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/standup-kanban/standup-kanban/internal/grouping"
-	"github.com/standup-kanban/standup-kanban/internal/model"
+	"github.com/autumnust/tack/internal/grouping"
+	"github.com/autumnust/tack/internal/model"
 )
 
 // --- Test helpers ---

@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/standup-kanban/standup-kanban/internal/model"
+	"github.com/autumnust/tack/internal/model"
 )
 
 // NavItem is a navigable item in the detail view (sub-issue).

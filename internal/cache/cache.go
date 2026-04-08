@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/standup-kanban/standup-kanban/internal/model"
+	"github.com/autumnust/tack/internal/model"
 )
 
-const cacheDir = ".cache/standup-kanban"
+const cacheDir = ".cache/tack"
 
 type CachedProject struct {
 	FetchedAt time.Time          `json:"fetched_at"`

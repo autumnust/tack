@@ -1,4 +1,4 @@
-# Standup Kanban configuration
+# Tack configuration
 # project: URL of your GitHub Project (org or user)
 project: "https://github.com/orgs/your-org/projects/2"
 
@@ -28,5 +28,5 @@ status_field: "Status"
 # planning: personal planning data directory
 # Can point to an Obsidian vault or any local/synced folder
 planning:
-  dir: "~/.standup-kanban"
+  dir: "~/.tack"
   max_week_focus: 3

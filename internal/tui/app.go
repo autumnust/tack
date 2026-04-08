@@ -11,11 +11,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/standup-kanban/standup-kanban/internal/cache"
-	"github.com/standup-kanban/standup-kanban/internal/github"
-	"github.com/standup-kanban/standup-kanban/internal/grouping"
-	"github.com/standup-kanban/standup-kanban/internal/model"
-	"github.com/standup-kanban/standup-kanban/internal/planning"
+	"github.com/autumnust/tack/internal/cache"
+	"github.com/autumnust/tack/internal/github"
+	"github.com/autumnust/tack/internal/grouping"
+	"github.com/autumnust/tack/internal/model"
+	"github.com/autumnust/tack/internal/planning"
 )
 
 type viewMode int
@@ -105,7 +105,7 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	// Initialize planning store
 	planDir := config.Planning.Dir
 	if planDir == "" {
-		planDir = "~/.standup-kanban"
+		planDir = "~/.tack"
 	}
 	if store, err := planning.NewStore(planDir); err == nil {
 		app.planStore = store
@@ -1121,7 +1121,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 	}
 
 	lines := []string{
-		detailHeaderStyle.Render("Standup Kanban — Help"),
+		detailHeaderStyle.Render("Tack — Help"),
 		"",
 		section("Navigation"),
 		"  " + key("Tab / l") + "Next person",

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standup-kanban/standup-kanban/internal/model"
+	"github.com/autumnust/tack/internal/model"
 	"gopkg.in/yaml.v3"
 )
 

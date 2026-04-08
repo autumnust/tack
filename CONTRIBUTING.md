@@ -1,4 +1,4 @@
-# Contributing to Standup Kanban
+# Contributing to Tack
 
 ## Development Workflow
 

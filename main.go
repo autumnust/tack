@@ -11,11 +11,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"gopkg.in/yaml.v3"
 
-	"github.com/standup-kanban/standup-kanban/internal/model"
-	"github.com/standup-kanban/standup-kanban/internal/planning"
-	"github.com/standup-kanban/standup-kanban/internal/tui"
+	"github.com/autumnust/tack/internal/model"
+	"github.com/autumnust/tack/internal/planning"
+	"github.com/autumnust/tack/internal/tui"
 
-	ghclient "github.com/standup-kanban/standup-kanban/internal/github"
+	ghclient "github.com/autumnust/tack/internal/github"
 )
 
 func main() {
@@ -58,7 +58,7 @@ func main() {
 func printStats(config model.Config) {
 	planDir := config.Planning.Dir
 	if planDir == "" {
-		planDir = "~/.standup-kanban"
+		planDir = "~/.tack"
 	}
 	store, err := planning.NewStore(planDir)
 	if err != nil {
@@ -96,7 +96,7 @@ func printStats(config model.Config) {
 func generateRecap(config model.Config) {
 	planDir := config.Planning.Dir
 	if planDir == "" {
-		planDir = "~/.standup-kanban"
+		planDir = "~/.tack"
 	}
 	store, err := planning.NewStore(planDir)
 	if err != nil {
