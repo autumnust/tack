@@ -1,26 +1,19 @@
 # Tack configuration
 # project: URL of your GitHub Project (org or user)
-project: "https://github.com/orgs/your-org/projects/2"
+project: "https://github.com/orgs/your-org/projects/1"
 
 focus:
-  - 26773
-  - 26984
-  - 25965
-  - 24692
+  - 100
+  - 200
+
 # team: GitHub usernames with optional display names
 team:
   - login: alice
     name: Alice
   - login: bob
-    name: An
+    name: Bob
   - login: charlie
     name: Charlie
-  - login: dave
-    name: Ben
-  - login: eve-user
-    name: Lei
-  - login: frank
-    name: Frank
 
 # status_field: name of the Status field in your GitHub Project
 status_field: "Status"
