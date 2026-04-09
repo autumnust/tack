@@ -145,8 +145,8 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 		app.cacheStale = age > cacheTTL
 	}
 
+	app.planView = NewPlanViewModel(app.plan, app.inbox, app.project)
 	if len(startInPlanMode) > 0 && startInPlanMode[0] {
-		app.planView = NewPlanViewModel(app.plan, app.inbox, app.project)
 		app.view = viewPlan
 		app.statusMsg = "Planning mode"
 	}
@@ -478,6 +478,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.executeCommand(result)
 			}
 			return m, cmd
+		}
+
+		// Edit mode in plan view takes priority over global keys
+		if m.view == viewPlan && m.planView.IsEditing() {
+			return m.updatePlan(msg)
 		}
 
 		// Review screen has its own key handling
@@ -1241,6 +1246,24 @@ func (m AppModel) selectedTarget() *model.ProjectItem {
 // --- Planning mode key handler ---
 
 func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.planView.IsEditing() {
+		switch msg.String() {
+		case "enter":
+			if text := m.planView.ConfirmEdit(); text != "" {
+				m.statusMsg = "Updated"
+			} else {
+				m.statusMsg = "Edit cancelled (empty text)"
+			}
+		case "esc":
+			m.planView.CancelEdit()
+			m.statusMsg = ""
+		default:
+			cmd := m.planView.UpdateEdit(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "tab", "l":
 		m.planView.NextSection()
@@ -1261,6 +1284,13 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if msg, ok := m.planView.ToggleDone(); ok {
 			m.statusMsg = msg
+		}
+	case "e":
+		if cmd, ok := m.planView.StartEdit(m.width); ok {
+			m.statusMsg = "Editing... Enter=save  Esc=cancel"
+			return m, cmd
+		} else {
+			m.statusMsg = "Cannot edit this item"
 		}
 	}
 	return m, nil
@@ -1486,6 +1516,8 @@ func (m AppModel) cmdScratch(args []string) (tea.Model, tea.Cmd) {
 		CreatedAt: time.Now(),
 	})
 	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetSection(sectionScratch)
+	m.view = viewPlan
 	m.statusMsg = "Scratch note added"
 	return m, nil
 }
@@ -1791,7 +1823,7 @@ func (m AppModel) View() string {
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
 	case viewPlan:
-		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  :board=back  :goal/:today/:scratch  :=cmd")
+		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  e=edit  :board=back  :goal/:today/:scratch  :=cmd")
 	default:
 		pending := ""
 		if m.ops.Len() > 0 {

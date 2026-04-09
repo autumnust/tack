@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/autumnust/tack/internal/model"
 )
@@ -51,13 +53,20 @@ type PlanViewModel struct {
 	scrollOffset int
 	viewHeight   int
 	width        int
+
+	editing   bool
+	editInput textinput.Model
 }
 
 func NewPlanViewModel(plan *model.Plan, inbox *model.Inbox, project *model.Project) PlanViewModel {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.CharLimit = 0
 	m := PlanViewModel{
-		plan:    plan,
-		inbox:   inbox,
-		project: project,
+		plan:      plan,
+		inbox:     inbox,
+		project:   project,
+		editInput: ti,
 	}
 	m.rebuildFlat()
 	return m
@@ -101,6 +110,13 @@ func (m *PlanViewModel) rebuildFlat() {
 	if m.cursorIdx < 0 {
 		m.cursorIdx = 0
 	}
+}
+
+func (m *PlanViewModel) SetSection(s planSection) {
+	m.section = s
+	m.cursorIdx = 0
+	m.scrollOffset = 0
+	m.rebuildFlat()
 }
 
 func (m *PlanViewModel) NextSection() {
@@ -278,6 +294,82 @@ func (m *PlanViewModel) currentFlat() *flatItem {
 	return &m.flatItems[m.cursorIdx]
 }
 
+func (m *PlanViewModel) IsEditing() bool { return m.editing }
+
+func (m *PlanViewModel) StartEdit(width int) (tea.Cmd, bool) {
+	fi := m.currentFlat()
+	if fi == nil {
+		return nil, false
+	}
+	var text string
+	switch m.section {
+	case sectionWeekFocus:
+		if fi.subIdx >= 0 {
+			sub := m.plan.WeekFocus[fi.focusIdx].SubItems[fi.subIdx]
+			if sub.IssueNum > 0 {
+				return nil, false
+			}
+			text = sub.Text
+		} else {
+			item := m.plan.WeekFocus[fi.focusIdx]
+			if item.IssueNum > 0 {
+				return nil, false
+			}
+			text = item.Text
+		}
+	case sectionToday:
+		item := m.plan.Today[fi.focusIdx]
+		if item.IssueNum > 0 {
+			return nil, false
+		}
+		text = item.Text
+	case sectionScratch:
+		text = m.plan.Scratch[fi.focusIdx].Text
+	default:
+		return nil, false
+	}
+	m.editing = true
+	m.editInput.SetValue(text)
+	cmd := m.editInput.Focus()
+	m.editInput.CursorEnd()
+	m.editInput.Width = width - 8
+	return cmd, true
+}
+
+func (m *PlanViewModel) ConfirmEdit() string {
+	fi := m.currentFlat()
+	newText := strings.TrimSpace(m.editInput.Value())
+	m.editing = false
+	m.editInput.Blur()
+	if fi == nil || newText == "" {
+		return ""
+	}
+	switch m.section {
+	case sectionWeekFocus:
+		if fi.subIdx >= 0 {
+			m.plan.WeekFocus[fi.focusIdx].SubItems[fi.subIdx].Text = newText
+		} else {
+			m.plan.WeekFocus[fi.focusIdx].Text = newText
+		}
+	case sectionToday:
+		m.plan.Today[fi.focusIdx].Text = newText
+	case sectionScratch:
+		m.plan.Scratch[fi.focusIdx].Text = newText
+	}
+	return newText
+}
+
+func (m *PlanViewModel) CancelEdit() {
+	m.editing = false
+	m.editInput.Blur()
+}
+
+func (m *PlanViewModel) UpdateEdit(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	m.editInput, cmd = m.editInput.Update(msg)
+	return cmd
+}
+
 func (m *PlanViewModel) resolveIssue(num int) *model.ProjectItem {
 	if m.project == nil || num == 0 {
 		return nil
@@ -337,6 +429,17 @@ func (m PlanViewModel) View(width, height int) string {
 		cursor := "  "
 		if i == m.cursorIdx {
 			cursor = cursorStyle.Render("► ")
+		}
+
+		if i == m.cursorIdx && m.editing {
+			lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+				Render(fmt.Sprintf("%d", fi.focusIdx+1))
+			if m.section == sectionWeekFocus && fi.subIdx >= 0 {
+				sb.WriteString(fmt.Sprintf("%s      %s\n", cursor, m.editInput.View()))
+			} else {
+				sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, lineNo, m.editInput.View()))
+			}
+			continue
 		}
 
 		switch m.section {
@@ -423,7 +526,7 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 			}
 			subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 		}
-		wrappedTitle := wrapText(title, 10, m.width)
+		wrappedTitle := wrapText(title, 10, m.width-lipgloss.Width(status)-lipgloss.Width(subCount))
 		return fmt.Sprintf("%s%s %s %s%s%s\n", cursor, lineNo, num, issueTitleStyle.Render(wrappedTitle), status, subCount)
 	}
 
@@ -437,7 +540,7 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 		}
 		subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 	}
-	wrappedText := wrapText(item.Text, 8, m.width)
+	wrappedText := wrapText(item.Text, 8, m.width-lipgloss.Width(subCount))
 	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, wrappedText, subCount)
 }
 
@@ -496,7 +599,7 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 		}
 	}
 
-	wrapped := wrapText(text, 12, m.width)
+	wrapped := wrapText(text, 12, m.width-lipgloss.Width(overdueTag))
 	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(wrapped), overdueTag)
 }
 
@@ -514,7 +617,7 @@ func (m PlanViewModel) renderInboxItem(cursor string, idx int) string {
 		from = commentAuthorStyle.Render(item.From+": ")
 	}
 
-	text := wrapText(item.Text, 8, m.width)
+	text := wrapText(item.Text, 8, m.width-lipgloss.Width(age))
 	return fmt.Sprintf("%s%s %s%s%s\n", cursor, lineNo, from, text, age)
 }
 
@@ -528,6 +631,6 @@ func (m PlanViewModel) renderScratchItem(cursor string, idx int) string {
 		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(note.CreatedAt)))
 	}
 
-	text := wrapText(note.Text, 8, m.width)
+	text := wrapText(note.Text, 8, m.width-lipgloss.Width(age))
 	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, text, age)
 }
