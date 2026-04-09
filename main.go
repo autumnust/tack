@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -27,13 +28,10 @@ func main() {
 	flag.Parse()
 
 	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
+	// Check both CWD and the directory containing the binary.
 	cfgPath := *configPath
 	if cfgPath == "" {
-		if _, err := os.Stat("config.local.yaml"); err == nil {
-			cfgPath = "config.local.yaml"
-		} else {
-			cfgPath = "config.yaml"
-		}
+		cfgPath = findConfig()
 	}
 
 	config, err := loadConfig(cfgPath)
@@ -191,6 +189,46 @@ func addScratch(config model.Config, text string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Scratch added: %s\n", text)
+}
+
+func findConfig() string {
+	// Check CWD first
+	if _, err := os.Stat("config.local.yaml"); err == nil {
+		return "config.local.yaml"
+	}
+	if _, err := os.Stat("config.yaml"); err == nil {
+		return "config.yaml"
+	}
+
+	// Check directory of the binary
+	exe, err := os.Executable()
+	if err == nil {
+		dir := filepath.Dir(exe)
+		local := filepath.Join(dir, "config.local.yaml")
+		if _, err := os.Stat(local); err == nil {
+			return local
+		}
+		base := filepath.Join(dir, "config.yaml")
+		if _, err := os.Stat(base); err == nil {
+			return base
+		}
+	}
+
+	// Check ~/.tack/
+	home, err := os.UserHomeDir()
+	if err == nil {
+		local := filepath.Join(home, ".tack", "config.local.yaml")
+		if _, err := os.Stat(local); err == nil {
+			return local
+		}
+		base := filepath.Join(home, ".tack", "config.yaml")
+		if _, err := os.Stat(base); err == nil {
+			return base
+		}
+	}
+
+	// Fallback
+	return "config.yaml"
 }
 
 func loadConfig(path string) (model.Config, error) {
