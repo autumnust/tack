@@ -21,6 +21,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	planMode := flag.Bool("plan", false, "start in planning mode")
+	scratchText := flag.String("scratch", "", "add a scratch note and exit (e.g. --scratch \"idea\")")
 	statsMode := flag.Bool("stats", false, "print command usage stats and exit")
 	recapMode := flag.Bool("recap", false, "generate weekly recap and exit (for cron)")
 	flag.Parse()
@@ -38,6 +39,10 @@ func main() {
 	}
 	if *recapMode {
 		generateRecap(config)
+		return
+	}
+	if *scratchText != "" {
+		addScratch(config, *scratchText)
 		return
 	}
 
@@ -150,6 +155,32 @@ func generateRecap(config model.Config) {
 	fmt.Print(recap)
 
 	store.SaveRecap(weekLabel, recap)
+}
+
+func addScratch(config model.Config, text string) {
+	planDir := config.Planning.Dir
+	if planDir == "" {
+		planDir = "~/.tack"
+	}
+	store, err := planning.NewStore(planDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	plan, err := store.LoadPlan()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading plan: %s\n", err)
+		os.Exit(1)
+	}
+	plan.Scratch = append(plan.Scratch, model.ScratchNote{
+		Text:      text,
+		CreatedAt: time.Now(),
+	})
+	if err := store.SavePlan(plan); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Scratch added: %s\n", text)
 }
 
 func loadConfig(path string) (model.Config, error) {
