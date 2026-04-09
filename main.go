@@ -19,14 +19,24 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "path to config file")
+	configPath := flag.String("config", "", "path to config file (default: config.local.yaml or config.yaml)")
 	planMode := flag.Bool("plan", false, "start in planning mode")
 	scratchText := flag.String("scratch", "", "add a scratch note and exit (e.g. --scratch \"idea\")")
 	statsMode := flag.Bool("stats", false, "print command usage stats and exit")
 	recapMode := flag.Bool("recap", false, "generate weekly recap and exit (for cron)")
 	flag.Parse()
 
-	config, err := loadConfig(*configPath)
+	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if _, err := os.Stat("config.local.yaml"); err == nil {
+			cfgPath = "config.local.yaml"
+		} else {
+			cfgPath = "config.yaml"
+		}
+	}
+
+	config, err := loadConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %s\n", err)
 		os.Exit(1)
@@ -52,7 +62,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := tui.NewApp(config, *configPath, client, *planMode)
+	app := tui.NewApp(config, cfgPath, client, *planMode)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
