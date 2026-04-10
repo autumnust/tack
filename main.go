@@ -25,6 +25,7 @@ func main() {
 	scratchText := flag.String("scratch", "", "add a scratch note and exit (e.g. --scratch \"idea\")")
 	statsMode := flag.Bool("stats", false, "print command usage stats and exit")
 	recapMode := flag.Bool("recap", false, "generate weekly recap and exit (for cron)")
+	whichConfig := flag.Bool("which-config", false, "print which config file would be loaded and exit")
 	flag.Parse()
 
 	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
@@ -33,10 +34,38 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = findConfig()
 	}
+	if cfgPath == "" {
+		fmt.Fprintln(os.Stderr, "No config file found. Searched:")
+		fmt.Fprintln(os.Stderr, "  1. ./config.local.yaml and ./config.yaml (current directory)")
+		if exe, err := os.Executable(); err == nil {
+			fmt.Fprintf(os.Stderr, "  2. %s/config{.local,}.yaml (binary directory)\n", filepath.Dir(exe))
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			fmt.Fprintf(os.Stderr, "  3. %s/.tack/config{.local,}.yaml\n", home)
+		}
+		fmt.Fprintln(os.Stderr, "\nCreate a config file or use --config <path>.")
+		os.Exit(1)
+	}
+
+	// Resolve to absolute path for reliable display and save-back
+	absCfgPath, err := filepath.Abs(cfgPath)
+	if err == nil {
+		cfgPath = absCfgPath
+	}
+
+	if *whichConfig {
+		fmt.Printf("Config: %s\n", cfgPath)
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			fmt.Printf("---\n%s", data)
+		} else {
+			fmt.Printf("Error reading: %s\n", err)
+		}
+		return
+	}
 
 	config, err := loadConfig(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %s\n", err)
+		fmt.Fprintf(os.Stderr, "Error loading config (%s): %s\n", cfgPath, err)
 		os.Exit(1)
 	}
 
@@ -227,8 +256,8 @@ func findConfig() string {
 		}
 	}
 
-	// Fallback
-	return "config.yaml"
+	// No config found anywhere
+	return ""
 }
 
 func loadConfig(path string) (model.Config, error) {

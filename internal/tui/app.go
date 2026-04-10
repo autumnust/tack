@@ -1795,7 +1795,7 @@ func (m AppModel) resolveNameToLogin(name string) string {
 
 func (m AppModel) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("\n  Error: %s\n\n  Check your config.yaml and GitHub authentication.\n  Press q to quit.\n", m.err)
+		return fmt.Sprintf("\n  Error: %s\n\n  Config: %s\n  Project: %s\n  Check your config and GitHub authentication.\n  Press q to quit.\n", m.err, m.configPath, m.config.Project)
 	}
 
 	if m.loading && m.view != viewPlan {
