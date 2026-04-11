@@ -47,7 +47,7 @@ make release     # Run tests, build, tag, push
 
 Or directly:
 ```bash
-go test ./internal/tui/ -v
+go test ./... -v
 ```
 
 ### Release Process
@@ -68,3 +68,14 @@ The test fixtures in `workflow_test.go` include:
 - ChildrenMap with sub-issues
 
 If your feature needs additional test data, extend `testProject()` or `testConfig()`.
+
+### Unit Test Files
+
+Beyond workflow tests, unit tests exist for pure-logic packages:
+
+- `internal/tui/command_test.go` — tokenize, parseCommand
+- `internal/tui/ops_test.go` — OpQueue, ExecuteChecked (with mock client)
+- `internal/grouping/strategy_test.go` — ByEpic, ByLabel, GroupByPerson
+- `internal/planning/store_test.go` — Store I/O, Rollover, usage stats
+
+Use `newTestAppWithStore(t)` for tests that need a planning store (stats, recap).
