@@ -1445,3 +1445,84 @@ func TestViewAllModesNoPanic(t *testing.T) {
 	assertView(t, app, viewReview)
 	_ = app.View()
 }
+
+// =====================================================
+// Init() startup path tests
+// =====================================================
+
+// Test 73: Plan mode + no cache → Init() should NOT fetch
+func TestInitPlanModeNoCache(t *testing.T) {
+	app := newTestApp()
+	app.view = viewPlan
+	app.project = nil // no cache
+	app.client = nil  // no GitHub client
+	app.loading = true
+	app.cacheStale = false
+
+	cmd := app.Init()
+	if cmd != nil {
+		t.Error("Init() in plan mode with no cache should return nil (no fetch), got non-nil cmd")
+	}
+	// Note: Init() uses value receiver so m.loading=false doesn't persist,
+	// but View() handles this with: m.loading && m.view != viewPlan
+}
+
+// Test 74: Plan mode + stale cache → Init() fetches in background
+func TestInitPlanModeStaleCacheFetches(t *testing.T) {
+	app := newTestApp()
+	app.view = viewPlan
+	// project is populated (from newTestApp), simulate stale cache
+	app.cacheStale = true
+
+	cmd := app.Init()
+	if cmd == nil {
+		t.Error("Init() in plan mode with stale cache should fetch in background")
+	}
+}
+
+// Test 75: Plan mode + fresh cache → Init() does nothing
+func TestInitPlanModeFreshCache(t *testing.T) {
+	app := newTestApp()
+	app.view = viewPlan
+	app.cacheStale = false
+	app.loading = false
+
+	cmd := app.Init()
+	if cmd != nil {
+		t.Error("Init() in plan mode with fresh cache should return nil")
+	}
+}
+
+// Test 76: Board mode + no cache → Init() fetches
+func TestInitBoardModeNoCache(t *testing.T) {
+	app := newTestApp()
+	app.view = viewBoard
+	app.loading = true // no cache loaded
+
+	cmd := app.Init()
+	if cmd == nil {
+		t.Error("Init() in board mode with no cache should return fetch cmd")
+	}
+}
+
+// Test 77: fetchData with nil client returns error, doesn't panic
+func TestFetchDataNilClient(t *testing.T) {
+	app := newTestApp()
+	app.client = nil
+
+	cmd := app.fetchData()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd from fetchData")
+	}
+	msg := cmd()
+	done, ok := msg.(fetchDoneMsg)
+	if !ok {
+		t.Fatalf("expected fetchDoneMsg, got %T", msg)
+	}
+	if done.err == nil {
+		t.Error("expected error from fetchData with nil client")
+	}
+	if !strings.Contains(done.err.Error(), "not available") {
+		t.Errorf("expected 'not available' in error, got: %s", done.err)
+	}
+}

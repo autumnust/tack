@@ -157,14 +157,10 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 func (m AppModel) Init() tea.Cmd {
 	if m.view == viewPlan {
 		// Planning mode doesn't need GitHub data to start.
-		// If we have cached data, great (pinned issues show status).
-		// Fetch in background either way so data is ready if user switches to board.
+		// If we have cached data and it's stale, refresh in background.
+		// If no cache at all, skip — don't block plan mode on GitHub.
 		m.loading = false
-		if m.project == nil {
-			// No cache — fetch in background, but don't block
-			return m.fetchData()
-		}
-		if m.cacheStale {
+		if m.project != nil && m.cacheStale {
 			return m.fetchData()
 		}
 		return nil
@@ -187,6 +183,9 @@ type preRenderDoneMsg struct {
 
 func (m AppModel) fetchData() tea.Cmd {
 	return func() tea.Msg {
+		if m.client == nil {
+			return fetchDoneMsg{err: fmt.Errorf("GitHub client not available — run 'gh auth login' first")}
+		}
 		project, err := m.client.FetchProject(m.config.Project, m.config.StatusField)
 		if err != nil {
 			return fetchDoneMsg{err: err}

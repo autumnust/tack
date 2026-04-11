@@ -84,7 +84,7 @@ func main() {
 	}
 
 	client, err := ghclient.NewClient()
-	if err != nil {
+	if err != nil && !*planMode {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
