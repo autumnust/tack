@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/autumnust/tack/internal/grouping"
 	"github.com/autumnust/tack/internal/model"
+	"github.com/autumnust/tack/internal/planning"
 )
 
 // --- Test helpers ---
@@ -684,4 +685,763 @@ func TestEditScratchRealFlow(t *testing.T) {
 			appD.view, appD.planView.section, len(appD.planView.flatItems), appD.planView.cursorIdx, appD.planView.editing)
 		t.Fatalf("Flow D: edit mode not activated — statusMsg=%q", appD.statusMsg)
 	}
+}
+
+// --- Helper for tests that need planning store ---
+
+func newTestAppWithStore(t *testing.T) AppModel {
+	t.Helper()
+	app := newTestApp()
+	store, err := planning.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.planStore = store
+	return app
+}
+
+// =====================================================
+// Phase 4: Workflow test expansion
+// =====================================================
+
+// --- Command targeting tests ---
+
+// Test 22: :mv from board cursor (no #N)
+func TestMvFromCursor(t *testing.T) {
+	app := newTestApp()
+	assertView(t, app, viewBoard)
+
+	// Navigate down to an issue (skip epic header)
+	app = sendKeys(t, app, "j", "j")
+
+	// Move via cursor target
+	app = sendCommand(t, app, "mv done")
+	assertOpsLen(t, app, 1)
+	assertStatus(t, app, "Queued")
+}
+
+// Test 23: :mv with invalid status
+func TestMvInvalidStatus(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "mv #101 bogus")
+	assertStatus(t, app, "Unknown status")
+	assertOpsLen(t, app, 0)
+}
+
+// Test 24: :mv with no args
+func TestMvNoArgs(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "mv")
+	assertStatus(t, app, "Usage")
+}
+
+// Test 25: :c #N "comment" (explicit issue from board)
+func TestCommentExplicitIssue(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `c #101 "test comment"`)
+	assertOpsLen(t, app, 1)
+	assertStatus(t, app, "#101")
+}
+
+// Test 26: :c from board cursor
+func TestCommentFromBoardCursor(t *testing.T) {
+	app := newTestApp()
+	// Navigate to a non-epic-header issue
+	app = sendKeys(t, app, "j", "j")
+	app = sendCommand(t, app, `c "cursor comment"`)
+	assertOpsLen(t, app, 1)
+	assertStatus(t, app, "Queued")
+}
+
+// --- Team management tests ---
+
+// Test 27: :add member
+func TestAddMember(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "add @dave")
+	if len(app.persons) != 4 {
+		t.Errorf("expected 4 persons after add, got %d", len(app.persons))
+	}
+	assertStatus(t, app, "Added dave")
+}
+
+// Test 28: :add duplicate
+func TestAddMemberDuplicate(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "add @alice")
+	assertStatus(t, app, "already")
+}
+
+// Test 29: :rm member
+func TestRemoveMember(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "rm @charlie")
+	if len(app.persons) != 2 {
+		t.Errorf("expected 2 persons after remove, got %d", len(app.persons))
+	}
+	assertStatus(t, app, "Removed charlie")
+}
+
+// Test 30: :rm not found
+func TestRemoveMemberNotFound(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "rm @nobody")
+	assertStatus(t, app, "not in team")
+}
+
+// Test 31: :rm current person clamps personIdx (Bug 3 fix validation)
+func TestRemoveCurrentPerson_ClampIdx(t *testing.T) {
+	app := newTestApp()
+	// Tab to person index 2 (charlie)
+	app = sendKeys(t, app, "tab", "tab")
+	if app.board.personIdx != 2 {
+		t.Fatalf("expected personIdx=2, got %d", app.board.personIdx)
+	}
+
+	app = sendCommand(t, app, "rm @charlie")
+	// personIdx should be clamped to valid range
+	if app.board.personIdx >= len(app.persons) {
+		t.Errorf("personIdx %d out of bounds (len=%d)", app.board.personIdx, len(app.persons))
+	}
+	// Board should render without panic
+	output := app.View()
+	if output == "" {
+		t.Error("expected non-empty view after removing current person")
+	}
+}
+
+// --- Grouping tests ---
+
+// Test 32: :group label:<prefix>
+func TestGroupLabel(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "group label:area:")
+	assertStatus(t, app, "label:area:")
+}
+
+// Test 33: :group epic (back to default)
+func TestGroupEpic(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "group label:x")
+	app = sendCommand(t, app, "group epic")
+	assertStatus(t, app, "epic")
+}
+
+// Test 34: :group unknown
+func TestGroupUnknown(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "group bogus")
+	assertStatus(t, app, "Unknown grouping")
+}
+
+// Test 35: unknown command
+func TestUnknownCommand(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "asdf")
+	assertStatus(t, app, "Unknown command")
+}
+
+// --- Focus tests ---
+
+// Test 36: :focus N
+func TestFocusAdd(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "focus 999")
+	assertOpsLen(t, app, 1)
+	if !containsInt(app.config.Focus, 999) {
+		t.Error("expected 999 in config.Focus")
+	}
+}
+
+// Test 37: :focus @Name N
+func TestFocusPersonal(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "focus @alice 999")
+	assertOpsLen(t, app, 1)
+	found := false
+	for _, t2 := range app.config.Team {
+		if t2.Login == "alice" && containsInt(t2.Focus, 999) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected 999 in alice's focus")
+	}
+}
+
+// Test 38: :unfocus N
+func TestUnfocusNumber(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "focus 100")
+	app = sendCommand(t, app, "unfocus 100")
+	if containsInt(app.config.Focus, 100) {
+		t.Error("expected 100 removed from config.Focus")
+	}
+}
+
+// Test 39: :focus clear
+func TestFocusClear(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "focus 100")
+	app = sendCommand(t, app, "focus clear")
+	if len(app.config.Focus) != 0 {
+		t.Errorf("expected empty focus after clear, got %v", app.config.Focus)
+	}
+}
+
+// Test 40: :focus save
+func TestFocusSave(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "focus save")
+	assertOpsLen(t, app, 1)
+	assertStatus(t, app, "save focus")
+}
+
+// --- Planning: sub/promote/done/del ---
+
+// Test 41: :sub adds breakdown item
+func TestSubAddBreakdownItem(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Ship v1"`)
+
+	// Navigate to the goal (first item in week focus)
+	// Already on it after adding
+	app = sendCommand(t, app, `sub "Write tests"`)
+	if len(app.plan.WeekFocus) != 1 {
+		t.Fatalf("expected 1 goal, got %d", len(app.plan.WeekFocus))
+	}
+	if len(app.plan.WeekFocus[0].SubItems) != 1 {
+		t.Fatalf("expected 1 sub-item, got %d", len(app.plan.WeekFocus[0].SubItems))
+	}
+	if app.plan.WeekFocus[0].SubItems[0].Text != "Write tests" {
+		t.Errorf("expected sub text 'Write tests', got %q", app.plan.WeekFocus[0].SubItems[0].Text)
+	}
+}
+
+// Test 42: :promote moves sub-item to today
+func TestPromoteToToday(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Ship v1"`)
+	app = sendCommand(t, app, `sub "Write tests"`)
+
+	// Navigate to the sub-item (j from goal header)
+	app = sendKeys(t, app, "j")
+
+	app = sendCommand(t, app, "promote")
+	if len(app.plan.Today) != 1 {
+		t.Fatalf("expected 1 today item after promote, got %d", len(app.plan.Today))
+	}
+	if app.plan.Today[0].Text != "Write tests" {
+		t.Errorf("expected promoted text 'Write tests', got %q", app.plan.Today[0].Text)
+	}
+	assertStatus(t, app, "Promoted")
+}
+
+// Test 43: :done toggles today item by cursor
+func TestDoneToggle(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "Task A"`)
+
+	// Switch to today tab
+	app = sendKeys(t, app, "tab")
+
+	app = sendCommand(t, app, "done")
+	if !app.plan.Today[0].Done {
+		t.Error("expected item to be done")
+	}
+	assertStatus(t, app, "Completed")
+
+	// Toggle back
+	app = sendCommand(t, app, "done")
+	if app.plan.Today[0].Done {
+		t.Error("expected item to be undone")
+	}
+	assertStatus(t, app, "Uncompleted")
+}
+
+// Test 44: :done N by number
+func TestDoneByNumber(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "A"`)
+	app = sendCommand(t, app, `today "B"`)
+	app = sendCommand(t, app, `today "C"`)
+
+	app = sendCommand(t, app, "done 2")
+	if !app.plan.Today[1].Done {
+		t.Error("expected item 2 to be done")
+	}
+	if app.plan.Today[0].Done || app.plan.Today[2].Done {
+		t.Error("only item 2 should be toggled")
+	}
+}
+
+// Test 45: :done invalid number
+func TestDoneInvalidNumber(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "A"`)
+	app = sendCommand(t, app, "done 99")
+	assertStatus(t, app, "Invalid")
+}
+
+// Test 46: :del week focus — cursor-based with sub-items (Bug 1 fix validation)
+func TestDeleteWeekFocusCursorBased(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Goal A"`)
+	app = sendCommand(t, app, `sub "Sub 1"`)
+	app = sendCommand(t, app, `goal "Goal B"`)
+
+	// flatItems: [Goal A, Sub 1, Goal B] — cursor starts at 0 after last add refreshes
+	// Navigate to Goal B (index 2 in flat list)
+	app = sendKeys(t, app, "j", "j")
+
+	app = sendCommand(t, app, "del")
+	if len(app.plan.WeekFocus) != 1 {
+		t.Fatalf("expected 1 goal after delete, got %d", len(app.plan.WeekFocus))
+	}
+	if app.plan.WeekFocus[0].Text != "Goal A" {
+		t.Errorf("expected 'Goal A' to remain, got %q", app.plan.WeekFocus[0].Text)
+	}
+	assertStatus(t, app, "Removed from week focus")
+}
+
+// Test 47: :del sub-item (Bug 1 fix validation)
+func TestDeleteWeekFocusSubItem(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Goal A"`)
+	app = sendCommand(t, app, `sub "Sub 1"`)
+	app = sendCommand(t, app, `sub "Sub 2"`)
+
+	// flatItems: [Goal A, Sub 1, Sub 2]
+	// Navigate to Sub 1 (index 1)
+	app = sendKeys(t, app, "j")
+
+	app = sendCommand(t, app, "del")
+	if len(app.plan.WeekFocus[0].SubItems) != 1 {
+		t.Fatalf("expected 1 sub-item after delete, got %d", len(app.plan.WeekFocus[0].SubItems))
+	}
+	if app.plan.WeekFocus[0].SubItems[0].Text != "Sub 2" {
+		t.Errorf("expected 'Sub 2' to remain, got %q", app.plan.WeekFocus[0].SubItems[0].Text)
+	}
+	assertStatus(t, app, "Removed breakdown item")
+}
+
+// Test 48: :del today item
+func TestDeleteTodayItem(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "A"`)
+	app = sendCommand(t, app, `today "B"`)
+
+	// Switch to today tab
+	app = sendKeys(t, app, "tab")
+
+	app = sendCommand(t, app, "del")
+	if len(app.plan.Today) != 1 {
+		t.Fatalf("expected 1 today item after delete, got %d", len(app.plan.Today))
+	}
+}
+
+// Test 49: :del scratch item
+func TestDeleteScratchItem(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `scratch "note"`)
+	// Already in plan view, scratch tab
+	app = sendCommand(t, app, "del")
+	if len(app.plan.Scratch) != 0 {
+		t.Errorf("expected 0 scratch after delete, got %d", len(app.plan.Scratch))
+	}
+}
+
+// Test 50: :del last item clamps cursor
+func TestDeleteLastItemClampsCursor(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "only item"`)
+	app = sendKeys(t, app, "tab") // today tab
+
+	app = sendCommand(t, app, "del")
+	if len(app.plan.Today) != 0 {
+		t.Fatal("expected 0 items")
+	}
+	// Should not panic on View
+	output := app.View()
+	if output == "" {
+		t.Error("expected non-empty view after deleting last item")
+	}
+}
+
+// Test 51: :del by line number
+func TestDeleteByLineNumber(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "A"`)
+	app = sendCommand(t, app, `today "B"`)
+	app = sendCommand(t, app, `today "C"`)
+	// Switch to today tab so :del operates on today section
+	app = sendKeys(t, app, "tab")
+
+	app = sendCommand(t, app, "del 2")
+	if len(app.plan.Today) != 2 {
+		t.Fatalf("expected 2 items after del 2, got %d", len(app.plan.Today))
+	}
+	if app.plan.Today[0].Text != "A" || app.plan.Today[1].Text != "C" {
+		t.Errorf("expected [A, C], got [%s, %s]", app.plan.Today[0].Text, app.plan.Today[1].Text)
+	}
+}
+
+// Test 52: :inbox clear
+func TestInboxClear(t *testing.T) {
+	app := newTestApp()
+	app.inbox = &model.Inbox{Items: []model.InboxItem{
+		{Text: "item 1"},
+		{Text: "item 2"},
+	}}
+	app = sendCommand(t, app, "inbox clear")
+	if len(app.inbox.Items) != 0 {
+		t.Errorf("expected empty inbox, got %d items", len(app.inbox.Items))
+	}
+	assertStatus(t, app, "Inbox cleared")
+}
+
+// --- Plan reorder tests ---
+
+// Test 53: K moves item up in today
+func TestReorderMoveUp(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "A"`)
+	app = sendCommand(t, app, `today "B"`)
+	app = sendKeys(t, app, "tab") // today tab
+	app = sendKeys(t, app, "j")   // cursor on B
+
+	app = sendKeys(t, app, "K")
+	if app.plan.Today[0].Text != "B" || app.plan.Today[1].Text != "A" {
+		t.Errorf("expected [B, A] after K, got [%s, %s]", app.plan.Today[0].Text, app.plan.Today[1].Text)
+	}
+}
+
+// Test 54: J moves item down in today
+func TestReorderMoveDown(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "A"`)
+	app = sendCommand(t, app, `today "B"`)
+	app = sendKeys(t, app, "tab") // today tab
+	// cursor on A (index 0)
+
+	app = sendKeys(t, app, "J")
+	if app.plan.Today[0].Text != "B" || app.plan.Today[1].Text != "A" {
+		t.Errorf("expected [B, A] after J, got [%s, %s]", app.plan.Today[0].Text, app.plan.Today[1].Text)
+	}
+}
+
+// --- Edit tests ---
+
+// Test 55: edit today item
+func TestEditTodayItem(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "old text"`)
+	app = sendKeys(t, app, "tab") // today tab
+
+	app = sendKeys(t, app, "e")
+	if !app.planView.IsEditing() {
+		t.Fatalf("expected editing mode, statusMsg=%q", app.statusMsg)
+	}
+	// Clear and type new text
+	for i := 0; i < 8; i++ {
+		app = sendKeys(t, app, "backspace")
+	}
+	app = sendKeys(t, app, "n", "e", "w")
+	app = sendKeys(t, app, "enter")
+
+	if app.planView.IsEditing() {
+		t.Error("expected editing=false after enter")
+	}
+	if app.plan.Today[0].Text != "new" {
+		t.Errorf("expected 'new', got %q", app.plan.Today[0].Text)
+	}
+}
+
+// Test 56: edit goal (freeform, not pinned)
+func TestEditGoalItem(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "old goal"`)
+
+	app = sendKeys(t, app, "e")
+	if !app.planView.IsEditing() {
+		t.Fatalf("expected editing mode, statusMsg=%q", app.statusMsg)
+	}
+	app = sendKeys(t, app, "enter") // confirm without changes
+	if app.planView.IsEditing() {
+		t.Error("expected editing ended")
+	}
+}
+
+// Test 57: edit pinned issue rejected
+func TestEditPinnedIssueRejected(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, "pin #101")
+	// Cursor should be on the pinned item
+	app = sendKeys(t, app, "e")
+	if app.planView.IsEditing() {
+		t.Error("should not be able to edit linked issue")
+	}
+	assertStatus(t, app, "Cannot edit")
+}
+
+// --- Review screen tests ---
+
+// Test 58: review navigation
+func TestReviewNavigation(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "mv #101 done")
+	app = sendCommand(t, app, "mv #201 done")
+	app = sendKeys(t, app, "q")
+	assertView(t, app, viewReview)
+
+	if app.review.cursorIdx != 0 {
+		t.Errorf("expected cursor at 0, got %d", app.review.cursorIdx)
+	}
+	app = sendKeys(t, app, "j")
+	if app.review.cursorIdx != 1 {
+		t.Errorf("expected cursor at 1 after j, got %d", app.review.cursorIdx)
+	}
+	app = sendKeys(t, app, "k")
+	if app.review.cursorIdx != 0 {
+		t.Errorf("expected cursor at 0 after k, got %d", app.review.cursorIdx)
+	}
+}
+
+// Test 59: review toggle
+func TestReviewToggle(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "mv #101 done")
+	app = sendKeys(t, app, "q")
+	assertView(t, app, viewReview)
+
+	// Initially checked
+	ops := app.ops.Ops()
+	if !ops[0].Checked {
+		t.Error("expected op to be checked initially")
+	}
+
+	// Toggle with enter
+	app = sendKeys(t, app, "enter")
+	ops = app.ops.Ops()
+	if ops[0].Checked {
+		t.Error("expected op unchecked after enter")
+	}
+}
+
+// Test 60: review check all / uncheck all
+func TestReviewCheckAll(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "mv #101 done")
+	app = sendCommand(t, app, "mv #201 done")
+	app = sendKeys(t, app, "q")
+	assertView(t, app, viewReview)
+
+	// Uncheck all
+	app = sendKeys(t, app, "n")
+	if len(app.ops.CheckedOps()) != 0 {
+		t.Error("expected 0 checked after n")
+	}
+
+	// Check all
+	app = sendKeys(t, app, "a")
+	if len(app.ops.CheckedOps()) != 2 {
+		t.Errorf("expected 2 checked after a, got %d", len(app.ops.CheckedOps()))
+	}
+}
+
+// Test 61: review discard
+func TestReviewDiscard(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "mv #101 done")
+	app = sendKeys(t, app, "q")
+	assertView(t, app, viewReview)
+
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	_ = m.(AppModel)
+	if cmd == nil {
+		t.Error("expected Quit command from discard")
+	}
+}
+
+// --- Board interaction tests ---
+
+// Test 62: board cursor stays valid after :mv
+func TestBoardCursorAfterMv(t *testing.T) {
+	app := newTestApp()
+	app.width = 120
+	app.height = 40
+
+	app = sendCommand(t, app, "mv #101 done")
+	// Board should render without panic
+	output := app.View()
+	if output == "" {
+		t.Error("expected non-empty view after mv")
+	}
+}
+
+// Test 63: selectedTarget from board
+func TestBoardSelectedTargetFromBoard(t *testing.T) {
+	app := newTestApp()
+	// First item might be an epic header, navigate to a child
+	app = sendKeys(t, app, "j", "j")
+
+	target := app.selectedTarget()
+	if target == nil {
+		t.Fatal("expected selectedTarget to return an issue from board cursor")
+	}
+}
+
+// Test 64: refresh key
+func TestRefreshKey(t *testing.T) {
+	app := newTestApp()
+	app = sendKeys(t, app, "r")
+	if !app.loading {
+		t.Error("expected loading=true after r")
+	}
+	assertStatus(t, app, "Refreshing")
+}
+
+// Test 65: empty board (zero items)
+func TestEmptyBoard(t *testing.T) {
+	app := newTestApp()
+	app.project = &model.Project{
+		StatusField: model.FieldInfo{
+			Options: []model.FieldOption{
+				{Name: "Todo"}, {Name: "In Progress"}, {Name: "Done"},
+			},
+		},
+	}
+	app.persons = nil
+	app.board = NewBoardModel(nil)
+	app.width = 120
+	app.height = 40
+
+	// Should not panic
+	output := app.View()
+	if output == "" {
+		t.Error("expected non-empty view for empty board")
+	}
+}
+
+// Test 66: :stats command switches to detail
+func TestStatsCommand(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.planStore.LogUsage(":mv")
+	app.planStore.LogUsage(":c")
+
+	app = sendCommand(t, app, "stats")
+	assertView(t, app, viewDetail)
+}
+
+// Test 67: :recap command switches to detail
+func TestRecapCommand(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.width = 120
+	app.height = 40
+
+	app = sendCommand(t, app, "recap")
+	assertView(t, app, viewDetail)
+	assertStatus(t, app, "Recap saved")
+}
+
+// Test 68: :del outside plan mode
+func TestDeleteOutsidePlanMode(t *testing.T) {
+	app := newTestApp()
+	assertView(t, app, viewBoard)
+	app = sendCommand(t, app, "del")
+	assertStatus(t, app, "only works in planning mode")
+}
+
+// Test 69: rendering review screen
+func TestReviewRendering(t *testing.T) {
+	app := newTestApp()
+	app.width = 120
+	app.height = 40
+	app = sendCommand(t, app, "mv #101 done")
+	app = sendCommand(t, app, `c #101 "test"`)
+	app = sendKeys(t, app, "q")
+	assertView(t, app, viewReview)
+
+	output := app.View()
+	if output == "" {
+		t.Error("review view empty")
+	}
+}
+
+// Test 70: :mv fuzzy status matching
+func TestMvFuzzyStatusMatch(t *testing.T) {
+	app := newTestApp()
+	// "d" should match "Done" (prefix match)
+	app = sendCommand(t, app, "mv #101 d")
+	assertOpsLen(t, app, 1)
+	assertStatus(t, app, "Done")
+}
+
+// Test 71: :del inbox item
+func TestDeleteInboxItem(t *testing.T) {
+	app := newTestApp()
+	app.inbox = &model.Inbox{Items: []model.InboxItem{
+		{Text: "item 1"},
+		{Text: "item 2"},
+	}}
+	app = sendCommand(t, app, "plan")
+	// Tab to inbox (WeekFocus -> Today -> Inbox)
+	app = sendKeys(t, app, "tab", "tab")
+	app.planView.SetData(app.plan, app.inbox, app.project)
+
+	app = sendCommand(t, app, "del")
+	if len(app.inbox.Items) != 1 {
+		t.Errorf("expected 1 inbox item after delete, got %d", len(app.inbox.Items))
+	}
+}
+
+// Test 72: view rendering in review mode doesn't panic
+func TestViewAllModesNoPanic(t *testing.T) {
+	app := newTestApp()
+	app.width = 120
+	app.height = 40
+
+	// Board
+	assertView(t, app, viewBoard)
+	_ = app.View()
+
+	// Plan
+	app = sendCommand(t, app, "plan")
+	_ = app.View()
+
+	// Plan tabs
+	app = sendKeys(t, app, "tab") // Today
+	_ = app.View()
+	app = sendKeys(t, app, "tab") // Inbox
+	_ = app.View()
+	app = sendKeys(t, app, "tab") // Scratch
+	_ = app.View()
+
+	// Board + ops + review
+	app = sendCommand(t, app, "board")
+	app = sendCommand(t, app, "mv #101 done")
+	app = sendKeys(t, app, "q")
+	assertView(t, app, viewReview)
+	_ = app.View()
 }

@@ -1474,16 +1474,19 @@ func (m AppModel) cmdDone(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		// Toggle current cursor item in Today section
 		if m.view == viewPlan && m.planView.section == sectionToday {
-			idx := m.planView.cursorIdx
-			if idx >= 0 && idx < len(m.plan.Today) {
-				m.plan.Today[idx].Done = !m.plan.Today[idx].Done
-				m.planView.SetData(m.plan, m.inbox, m.project)
-				if m.plan.Today[idx].Done {
-					m.statusMsg = fmt.Sprintf("Completed: %s", m.plan.Today[idx].Text)
-				} else {
-					m.statusMsg = fmt.Sprintf("Uncompleted: %s", m.plan.Today[idx].Text)
+			fi := m.planView.currentFlat()
+			if fi != nil {
+				idx := fi.focusIdx
+				if idx >= 0 && idx < len(m.plan.Today) {
+					m.plan.Today[idx].Done = !m.plan.Today[idx].Done
+					m.planView.SetData(m.plan, m.inbox, m.project)
+					if m.plan.Today[idx].Done {
+						m.statusMsg = fmt.Sprintf("Completed: %s", m.plan.Today[idx].Text)
+					} else {
+						m.statusMsg = fmt.Sprintf("Uncompleted: %s", m.plan.Today[idx].Text)
+					}
+					return m, nil
 				}
-				return m, nil
 			}
 		}
 		m.statusMsg = "Usage: :done <N> or select a today item and :done"
@@ -1747,33 +1750,82 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 		m.statusMsg = ":del only works in planning mode"
 		return m, nil
 	}
-	// Delete the item at cursor in current section, or by line number
-	idx := m.planView.cursorIdx
+
+	// Explicit line number arg: :del N (1-indexed into the current section's data)
 	if len(args) > 0 {
 		if n, err := strconv.Atoi(args[0]); err == nil {
-			idx = n - 1
+			idx := n - 1
+			switch m.planView.section {
+			case sectionWeekFocus:
+				if idx >= 0 && idx < len(m.plan.WeekFocus) {
+					removed := m.plan.WeekFocus[idx].Text
+					m.plan.WeekFocus = append(m.plan.WeekFocus[:idx], m.plan.WeekFocus[idx+1:]...)
+					m.statusMsg = fmt.Sprintf("Removed from week focus: %s", removed)
+				}
+			case sectionToday:
+				if idx >= 0 && idx < len(m.plan.Today) {
+					removed := m.plan.Today[idx].Text
+					m.plan.Today = append(m.plan.Today[:idx], m.plan.Today[idx+1:]...)
+					m.statusMsg = fmt.Sprintf("Removed from today: %s", removed)
+				}
+			case sectionScratch:
+				if idx >= 0 && idx < len(m.plan.Scratch) {
+					m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
+					m.statusMsg = "Scratch note removed"
+				}
+			case sectionInbox:
+				if m.inbox != nil && idx >= 0 && idx < len(m.inbox.Items) {
+					m.inbox.Items = append(m.inbox.Items[:idx], m.inbox.Items[idx+1:]...)
+					m.statusMsg = "Inbox item removed"
+				}
+			}
+			m.planView.SetData(m.plan, m.inbox, m.project)
+			return m, nil
 		}
+	}
+
+	// Cursor-based deletion: resolve via flatItem to get correct data index
+	fi := m.planView.currentFlat()
+	if fi == nil {
+		m.statusMsg = "Nothing to delete"
+		return m, nil
 	}
 
 	switch m.planView.section {
 	case sectionWeekFocus:
-		if idx >= 0 && idx < len(m.plan.WeekFocus) {
-			removed := m.plan.WeekFocus[idx].Text
-			m.plan.WeekFocus = append(m.plan.WeekFocus[:idx], m.plan.WeekFocus[idx+1:]...)
-			m.statusMsg = fmt.Sprintf("Removed from week focus: %s", removed)
+		if fi.subIdx >= 0 {
+			// Deleting a sub-item
+			if fi.focusIdx >= 0 && fi.focusIdx < len(m.plan.WeekFocus) {
+				subs := &m.plan.WeekFocus[fi.focusIdx].SubItems
+				if fi.subIdx < len(*subs) {
+					removed := (*subs)[fi.subIdx].Text
+					*subs = append((*subs)[:fi.subIdx], (*subs)[fi.subIdx+1:]...)
+					m.statusMsg = fmt.Sprintf("Removed breakdown item: %s", removed)
+				}
+			}
+		} else {
+			// Deleting a top-level goal
+			if fi.focusIdx >= 0 && fi.focusIdx < len(m.plan.WeekFocus) {
+				removed := m.plan.WeekFocus[fi.focusIdx].Text
+				m.plan.WeekFocus = append(m.plan.WeekFocus[:fi.focusIdx], m.plan.WeekFocus[fi.focusIdx+1:]...)
+				m.statusMsg = fmt.Sprintf("Removed from week focus: %s", removed)
+			}
 		}
 	case sectionToday:
+		idx := fi.focusIdx
 		if idx >= 0 && idx < len(m.plan.Today) {
 			removed := m.plan.Today[idx].Text
 			m.plan.Today = append(m.plan.Today[:idx], m.plan.Today[idx+1:]...)
 			m.statusMsg = fmt.Sprintf("Removed from today: %s", removed)
 		}
 	case sectionScratch:
+		idx := fi.focusIdx
 		if idx >= 0 && idx < len(m.plan.Scratch) {
 			m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
 			m.statusMsg = "Scratch note removed"
 		}
 	case sectionInbox:
+		idx := fi.focusIdx
 		if m.inbox != nil && idx >= 0 && idx < len(m.inbox.Items) {
 			m.inbox.Items = append(m.inbox.Items[:idx], m.inbox.Items[idx+1:]...)
 			m.statusMsg = "Inbox item removed"

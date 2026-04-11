@@ -4,7 +4,7 @@ BINARY := tack
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 test:
-	go test ./internal/tui/ -v -count=1
+	go test ./... -v -count=1
 
 build: test
 	go build -o $(BINARY) .

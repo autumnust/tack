@@ -57,6 +57,12 @@ func epicKey(personIdx, groupIdx int) string {
 
 func (b *BoardModel) SetPersons(persons []model.PersonGroup) {
 	b.persons = persons
+	// Clamp personIdx if the list shrank (e.g. after :rm)
+	if len(b.persons) == 0 {
+		b.personIdx = 0
+	} else if b.personIdx >= len(b.persons) {
+		b.personIdx = len(b.persons) - 1
+	}
 	// Keep expanded state, add new epics as expanded
 	for pi, p := range persons {
 		for gi, g := range p.Groups {
