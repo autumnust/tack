@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +74,6 @@ func newTestApp() AppModel {
 		strategy: grouping.ByEpic{},
 		plan:        &model.Plan{},
 		annotations: &model.Annotations{},
-		inbox:       &model.Inbox{},
 	}
 
 	var names []string
@@ -84,7 +84,7 @@ func newTestApp() AppModel {
 		names = append(names, t.Login)
 	}
 	app.command.SetCompletionNames(names)
-	app.planView = NewPlanViewModel(app.plan, app.inbox, app.project)
+	app.planView = NewPlanViewModel(app.plan, app.project)
 
 	// Pre-populate with test project data
 	app.project = testProject()
@@ -535,155 +535,77 @@ func TestViewRenderingNoPanic(t *testing.T) {
 	}
 }
 
-// Test 20: Edit scratch note with 'e' key
-func TestEditScratchNote(t *testing.T) {
+// Test 20: Hibana note via :hibana command
+func TestHibanaAddNote(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
 
-	// Add a scratch note (this should switch to plan view, scratch tab)
-	app = sendCommand(t, app, "scratch \"hello world\"")
+	// Add a note via :hibana "text"
+	app = sendCommand(t, app, "hibana \"hello world\"")
 	assertView(t, app, viewPlan)
 	if len(app.plan.Scratch) != 1 {
-		t.Fatalf("expected 1 scratch note, got %d", len(app.plan.Scratch))
+		t.Fatalf("expected 1 note, got %d", len(app.plan.Scratch))
 	}
-	if app.planView.section != sectionScratch {
-		t.Fatalf("expected scratch section, got %d", app.planView.section)
+	if app.planView.section != sectionHibana {
+		t.Fatalf("expected hibana section, got %d", app.planView.section)
 	}
-
-	// Press 'e' to edit
-	app = sendKeys(t, app, "e")
-	if !app.planView.IsEditing() {
-		t.Fatalf("expected editing=true after 'e', statusMsg=%q", app.statusMsg)
-	}
-	assertStatus(t, app, "Editing")
-
-	// Type replacement text
-	app = sendKeys(t, app, "backspace", "backspace", "backspace", "backspace", "backspace",
-		"backspace", "backspace", "backspace", "backspace", "backspace", "backspace",
-		"g", "o", "o", "d", "b", "y", "e")
-	app = sendKeys(t, app, "enter")
-
-	if app.planView.IsEditing() {
-		t.Error("expected editing=false after enter")
-	}
-	if app.plan.Scratch[0].Text != "goodbye" {
-		t.Errorf("expected scratch text 'goodbye', got %q", app.plan.Scratch[0].Text)
+	if app.plan.Scratch[0].Text != "hello world" {
+		t.Errorf("expected text 'hello world', got %q", app.plan.Scratch[0].Text)
 	}
 }
 
-// Test 21: Edit scratch — simulate real user flow step by step
-func TestEditScratchRealFlow(t *testing.T) {
+// Test 21: Hibana editor flow — 'e' key returns a command (vim), editorFinishedMsg updates note
+func TestHibanaEditorFlow(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
 
-	// Flow A: user starts on board, types :plan, tabs to scratch, adds note, presses e
-	app = sendCommand(t, app, "plan")
+	// Add a note and navigate to it
+	app = sendCommand(t, app, "hibana \"test note\"")
 	assertView(t, app, viewPlan)
-	t.Logf("after :plan — view=%d section=%d flatItems=%d", app.view, app.planView.section, len(app.planView.flatItems))
-
-	// Add a scratch note while in plan view
-	app = sendCommand(t, app, "scratch \"test note\"")
-	t.Logf("after :scratch — view=%d section=%d flatItems=%d cursorIdx=%d scratchLen=%d statusMsg=%q",
-		app.view, app.planView.section, len(app.planView.flatItems), app.planView.cursorIdx, len(app.plan.Scratch), app.statusMsg)
-
-	assertView(t, app, viewPlan)
-	if app.planView.section != sectionScratch {
-		t.Fatalf("expected sectionScratch(%d), got %d", sectionScratch, app.planView.section)
-	}
-	if len(app.planView.flatItems) == 0 {
-		t.Fatal("flatItems is empty — cursor has nothing to select")
+	if app.planView.section != sectionHibana {
+		t.Fatalf("expected sectionHibana, got %d", app.planView.section)
 	}
 
-	// Now press 'e' — send as a single rune
+	// Press 'e' — launches vim (returns a command)
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
-	t.Logf("sending key: type=%d runes=%q string=%q", msg.Type, string(msg.Runes), msg.String())
-	m, _ := app.Update(msg)
+	m, cmd := app.Update(msg)
 	app = m.(AppModel)
-	t.Logf("after 'e' — editing=%v statusMsg=%q", app.planView.IsEditing(), app.statusMsg)
-
-	if !app.planView.IsEditing() {
-		t.Fatalf("edit mode not activated — statusMsg=%q", app.statusMsg)
+	if cmd == nil {
+		t.Fatal("expected a command (editor launch) from 'e' key")
 	}
 
-	// Flow B: user starts on board, types :scratch (never :plan first)
+	// Simulate editorFinishedMsg with updated text
+	tmpFile := t.TempDir() + "/note.md"
+	os.WriteFile(tmpFile, []byte("updated note\nwith newlines"), 0644)
+	m2, _ := app.Update(editorFinishedMsg{tmpPath: tmpFile, section: sectionHibana, idx: 0, subIdx: -1, err: nil})
+	app = m2.(AppModel)
+
+	if app.plan.Scratch[0].Text != "updated note\nwith newlines" {
+		t.Errorf("expected updated text, got %q", app.plan.Scratch[0].Text)
+	}
+	assertStatus(t, app, "Note updated")
+
+	// Tab navigation to Hibana (WeekFocus -> Today -> Hibana)
 	app2 := newTestApp()
-	app2.width = 80
-	app2.height = 40
-	app2 = sendCommand(t, app2, "scratch \"from board\"")
-	t.Logf("Flow B after :scratch — view=%d section=%d flatItems=%d cursorIdx=%d",
-		app2.view, app2.planView.section, len(app2.planView.flatItems), app2.planView.cursorIdx)
+	app2.plan.Scratch = []model.ScratchNote{
+		{Text: "existing note", CreatedAt: time.Now().Add(-1 * time.Hour)},
+	}
+	app2.planView = NewPlanViewModel(app2.plan, app2.project)
+	app2.view = viewPlan
+	mD, _ := app2.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app2 = mD.(AppModel)
 
-	m2, _ := app2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
-	app2 = m2.(AppModel)
-	t.Logf("Flow B after 'e' — editing=%v statusMsg=%q", app2.planView.IsEditing(), app2.statusMsg)
-
-	if !app2.planView.IsEditing() {
-		t.Fatalf("Flow B: edit mode not activated — statusMsg=%q", app2.statusMsg)
+	app2 = sendKeys(t, app2, "tab", "tab")
+	if app2.planView.section != sectionHibana {
+		t.Fatalf("expected sectionHibana after 2 tabs, got %d", app2.planView.section)
 	}
 
-	// Flow C: scratch notes pre-exist on disk, user does :plan, tabs to scratch, presses e
-	app3 := newTestApp()
-	app3.width = 80
-	app3.height = 40
-	app3.plan.Scratch = []model.ScratchNote{
-		{Text: "pre-existing note", CreatedAt: time.Now().Add(-1 * time.Hour)},
-	}
-	app3 = sendCommand(t, app3, "plan")
-	assertView(t, app3, viewPlan)
-	// Tab to scratch tab (WeekFocus -> Today -> Inbox -> Scratch)
-	app3 = sendKeys(t, app3, "tab", "tab", "tab")
-	t.Logf("Flow C after tabs — section=%d flatItems=%d cursorIdx=%d",
-		app3.planView.section, len(app3.planView.flatItems), app3.planView.cursorIdx)
-	if app3.planView.section != sectionScratch {
-		t.Fatalf("Flow C: expected sectionScratch, got %d", app3.planView.section)
-	}
-
-	m3, _ := app3.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
-	app3 = m3.(AppModel)
-	t.Logf("Flow C after 'e' — editing=%v statusMsg=%q", app3.planView.IsEditing(), app3.statusMsg)
-	if !app3.planView.IsEditing() {
-		t.Fatalf("Flow C: edit mode not activated — statusMsg=%q", app3.statusMsg)
-	}
-
-	// Flow D: exact --plan startup simulation
-	// Mimic NewApp with startInPlanMode=true, pre-existing scratch notes
-	appD := newTestApp()
-	appD.plan.Scratch = []model.ScratchNote{
-		{Text: "existing note from disk", CreatedAt: time.Now().Add(-2 * time.Hour)},
-	}
-	// Re-create planView exactly like NewApp does when --plan
-	appD.planView = NewPlanViewModel(appD.plan, appD.inbox, appD.project)
-	appD.view = viewPlan
-	appD.statusMsg = "Planning mode"
-
-	// Simulate WindowSizeMsg (first msg in real terminal)
-	mD, _ := appD.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	appD = mD.(AppModel)
-	t.Logf("Flow D after WindowSizeMsg — width=%d height=%d view=%d", appD.width, appD.height, appD.view)
-
-	// Tab to scratch: WeekFocus(0) -> Today(1) -> Inbox(2) -> Scratch(3)
-	appD = sendKeys(t, appD, "tab", "tab", "tab")
-	t.Logf("Flow D after tabs — view=%d section=%d flatItems=%d cursorIdx=%d scratchLen=%d",
-		appD.view, appD.planView.section, len(appD.planView.flatItems), appD.planView.cursorIdx, len(appD.plan.Scratch))
-
-	// Render to verify scratch note is visible
-	output := appD.View()
-	if !strings.Contains(output, "existing note from disk") {
-		t.Logf("Flow D rendered view:\n%s", output)
-		t.Fatal("Flow D: scratch note not visible in rendered output")
-	}
-
-	// Press 'e'
-	mD2, _ := appD.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
-	appD = mD2.(AppModel)
-	t.Logf("Flow D after 'e' — editing=%v statusMsg=%q view=%d", appD.planView.IsEditing(), appD.statusMsg, appD.view)
-
-	if !appD.planView.IsEditing() {
-		t.Logf("Flow D full state: view=%d section=%d flatItems=%d cursorIdx=%d editing=%v",
-			appD.view, appD.planView.section, len(appD.planView.flatItems), appD.planView.cursorIdx, appD.planView.editing)
-		t.Fatalf("Flow D: edit mode not activated — statusMsg=%q", appD.statusMsg)
+	// Render to verify note is visible
+	output := app2.View()
+	if !strings.Contains(output, "existing note") {
+		t.Fatal("note not visible in rendered output")
 	}
 }
 
@@ -1096,20 +1018,6 @@ func TestDeleteByLineNumber(t *testing.T) {
 	}
 }
 
-// Test 52: :inbox clear
-func TestInboxClear(t *testing.T) {
-	app := newTestApp()
-	app.inbox = &model.Inbox{Items: []model.InboxItem{
-		{Text: "item 1"},
-		{Text: "item 2"},
-	}}
-	app = sendCommand(t, app, "inbox clear")
-	if len(app.inbox.Items) != 0 {
-		t.Errorf("expected empty inbox, got %d items", len(app.inbox.Items))
-	}
-	assertStatus(t, app, "Inbox cleared")
-}
-
 // --- Plan reorder tests ---
 
 // Test 53: K moves item up in today
@@ -1144,7 +1052,7 @@ func TestReorderMoveDown(t *testing.T) {
 
 // --- Edit tests ---
 
-// Test 55: edit today item
+// Test 55: edit today item opens editor
 func TestEditTodayItem(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
@@ -1153,26 +1061,25 @@ func TestEditTodayItem(t *testing.T) {
 	app = sendCommand(t, app, `today "old text"`)
 	app = sendKeys(t, app, "tab") // today tab
 
-	app = sendKeys(t, app, "e")
-	if !app.planView.IsEditing() {
-		t.Fatalf("expected editing mode, statusMsg=%q", app.statusMsg)
+	// 'e' should launch external editor (returns a command)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+	m, cmd := app.Update(msg)
+	app = m.(AppModel)
+	if cmd == nil {
+		t.Fatal("expected a command (editor launch) from 'e' key")
 	}
-	// Clear and type new text
-	for i := 0; i < 8; i++ {
-		app = sendKeys(t, app, "backspace")
-	}
-	app = sendKeys(t, app, "n", "e", "w")
-	app = sendKeys(t, app, "enter")
 
-	if app.planView.IsEditing() {
-		t.Error("expected editing=false after enter")
-	}
-	if app.plan.Today[0].Text != "new" {
-		t.Errorf("expected 'new', got %q", app.plan.Today[0].Text)
+	// Simulate editorFinishedMsg
+	tmpFile := t.TempDir() + "/note.md"
+	os.WriteFile(tmpFile, []byte("new text"), 0644)
+	m2, _ := app.Update(editorFinishedMsg{tmpPath: tmpFile, section: sectionToday, idx: 0, subIdx: -1, err: nil})
+	app = m2.(AppModel)
+	if app.plan.Today[0].Text != "new text" {
+		t.Errorf("expected 'new text', got %q", app.plan.Today[0].Text)
 	}
 }
 
-// Test 56: edit goal (freeform, not pinned)
+// Test 56: edit goal opens editor
 func TestEditGoalItem(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
@@ -1180,13 +1087,11 @@ func TestEditGoalItem(t *testing.T) {
 	app = sendCommand(t, app, "plan")
 	app = sendCommand(t, app, `goal "old goal"`)
 
-	app = sendKeys(t, app, "e")
-	if !app.planView.IsEditing() {
-		t.Fatalf("expected editing mode, statusMsg=%q", app.statusMsg)
-	}
-	app = sendKeys(t, app, "enter") // confirm without changes
-	if app.planView.IsEditing() {
-		t.Error("expected editing ended")
+	// 'e' should launch external editor
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+	_, cmd := app.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a command (editor launch) from 'e' key")
 	}
 }
 
@@ -1197,11 +1102,10 @@ func TestEditPinnedIssueRejected(t *testing.T) {
 	app.height = 40
 	app = sendCommand(t, app, "plan")
 	app = sendCommand(t, app, "pin #101")
-	// Cursor should be on the pinned item
+	// Rebuild planView so the pinned item is visible
+	app.planView.SetData(app.plan, app.project)
+	// Cursor should be on the pinned item in week focus
 	app = sendKeys(t, app, "e")
-	if app.planView.IsEditing() {
-		t.Error("should not be able to edit linked issue")
-	}
 	assertStatus(t, app, "Cannot edit")
 }
 
@@ -1398,24 +1302,6 @@ func TestMvFuzzyStatusMatch(t *testing.T) {
 	assertStatus(t, app, "Done")
 }
 
-// Test 71: :del inbox item
-func TestDeleteInboxItem(t *testing.T) {
-	app := newTestApp()
-	app.inbox = &model.Inbox{Items: []model.InboxItem{
-		{Text: "item 1"},
-		{Text: "item 2"},
-	}}
-	app = sendCommand(t, app, "plan")
-	// Tab to inbox (WeekFocus -> Today -> Inbox)
-	app = sendKeys(t, app, "tab", "tab")
-	app.planView.SetData(app.plan, app.inbox, app.project)
-
-	app = sendCommand(t, app, "del")
-	if len(app.inbox.Items) != 1 {
-		t.Errorf("expected 1 inbox item after delete, got %d", len(app.inbox.Items))
-	}
-}
-
 // Test 72: view rendering in review mode doesn't panic
 func TestViewAllModesNoPanic(t *testing.T) {
 	app := newTestApp()
@@ -1433,9 +1319,7 @@ func TestViewAllModesNoPanic(t *testing.T) {
 	// Plan tabs
 	app = sendKeys(t, app, "tab") // Today
 	_ = app.View()
-	app = sendKeys(t, app, "tab") // Inbox
-	_ = app.View()
-	app = sendKeys(t, app, "tab") // Scratch
+	app = sendKeys(t, app, "tab") // Hibana
 	_ = app.View()
 
 	// Board + ops + review

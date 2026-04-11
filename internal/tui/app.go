@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -46,7 +47,6 @@ type AppModel struct {
 	planStore   *planning.Store
 	plan        *model.Plan
 	annotations *model.Annotations
-	inbox       *model.Inbox
 
 	// View state
 	view     viewMode
@@ -77,6 +77,14 @@ type fetchDoneMsg struct {
 
 type pushDoneMsg struct {
 	summary string
+	err     error
+}
+
+type editorFinishedMsg struct {
+	tmpPath string      // temp file to read back
+	section planSection // which section was being edited
+	idx     int         // -1 for new item, >=0 for editing existing
+	subIdx  int         // -1 for top-level, >=0 for sub-item (week focus)
 	err     error
 }
 
@@ -120,15 +128,9 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 		} else {
 			app.annotations = &model.Annotations{}
 		}
-		if inbox, err := store.LoadInbox(); err == nil {
-			app.inbox = inbox
-		} else {
-			app.inbox = &model.Inbox{}
-		}
 	} else {
 		app.plan = &model.Plan{}
 		app.annotations = &model.Annotations{}
-		app.inbox = &model.Inbox{}
 	}
 
 	// Load cache synchronously — no loading flash
@@ -139,13 +141,14 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 		app.project = project
 		app.persons = grouping.GroupByPerson(project.Items, config.TeamLogins(), app.currentStrategy(), app.displayNames(), app.focusSets())
 		app.board = NewBoardModel(app.persons)
+		app.board.SetAnnotations(app.annotations)
 		app.loading = false
 		age := time.Since(cached.FetchedAt).Truncate(time.Second)
 		app.statusMsg = fmt.Sprintf("Loaded %d items from cache (%s old)", len(project.Items), age)
 		app.cacheStale = age > cacheTTL
 	}
 
-	app.planView = NewPlanViewModel(app.plan, app.inbox, app.project)
+	app.planView = NewPlanViewModel(app.plan, app.project)
 	if len(startInPlanMode) > 0 && startInPlanMode[0] {
 		app.view = viewPlan
 		app.statusMsg = "Planning mode"
@@ -451,6 +454,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.board = NewBoardModel(m.persons)
 			m.statusMsg = fmt.Sprintf("Loaded %d items from %s", len(m.project.Items), m.project.Title)
 		}
+		m.board.SetAnnotations(m.annotations)
 		// Pre-render all detail views in background
 		return m, m.preRenderAll()
 
@@ -469,6 +473,55 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = msg.summary
 		return m, tea.Quit
 
+	case editorFinishedMsg:
+		defer os.Remove(msg.tmpPath)
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Editor error: %s", msg.err)
+			return m, nil
+		}
+		data, err := os.ReadFile(msg.tmpPath)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Error reading: %s", err)
+			return m, nil
+		}
+		text := strings.TrimRight(string(data), "\n")
+		if text == "" {
+			m.statusMsg = "Empty text, discarded"
+			return m, nil
+		}
+		switch msg.section {
+		case sectionWeekFocus:
+			if msg.subIdx >= 0 && msg.idx < len(m.plan.WeekFocus) {
+				subs := m.plan.WeekFocus[msg.idx].SubItems
+				if msg.subIdx < len(subs) {
+					m.plan.WeekFocus[msg.idx].SubItems[msg.subIdx].Text = text
+				}
+			} else if msg.idx < len(m.plan.WeekFocus) {
+				m.plan.WeekFocus[msg.idx].Text = text
+			}
+			m.statusMsg = "Updated"
+		case sectionToday:
+			if msg.idx < len(m.plan.Today) {
+				m.plan.Today[msg.idx].Text = text
+			}
+			m.statusMsg = "Updated"
+		case sectionHibana:
+			if msg.idx < 0 {
+				m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
+					Text:      text,
+					CreatedAt: time.Now(),
+				})
+				m.statusMsg = "Note added"
+			} else if msg.idx < len(m.plan.Scratch) {
+				m.plan.Scratch[msg.idx].Text = text
+				m.statusMsg = "Note updated"
+			}
+		}
+		m.planView.SetData(m.plan, m.project)
+		m.planView.SetSection(msg.section)
+		m.view = viewPlan
+		return m, nil
+
 	case tea.KeyMsg:
 		// Command bar takes priority when active
 		if m.command.IsActive() {
@@ -477,11 +530,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.executeCommand(result)
 			}
 			return m, cmd
-		}
-
-		// Edit mode in plan view takes priority over global keys
-		if m.view == viewPlan && m.planView.IsEditing() {
-			return m.updatePlan(msg)
 		}
 
 		// Review screen has its own key handling
@@ -528,6 +576,13 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.board.CursorDown()
 	case "k", "up":
 		m.board.CursorUp()
+	case "n":
+		m.board.ToggleNotes()
+		if m.board.ShowingNotes() {
+			m.statusMsg = "Notes visible (n to hide)"
+		} else {
+			m.statusMsg = "Notes hidden"
+		}
 	case "enter":
 		result := m.board.ToggleOrSelect()
 		if result != nil {
@@ -630,7 +685,6 @@ func (m AppModel) savePlanningData() {
 	}
 	m.planStore.SavePlan(m.plan)
 	m.planStore.SaveAnnotations(m.annotations)
-	m.planStore.SaveInbox(m.inbox)
 }
 
 func (m AppModel) pushCheckedOps() (tea.Model, tea.Cmd) {
@@ -689,6 +743,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdUnfocus(cmd.Args)
 	case "note":
 		return m.cmdNote(cmd.Args)
+	case "delnote":
+		return m.cmdDelNote(cmd.Args)
 	case "pin":
 		return m.cmdPin(cmd.Args)
 	case "plan":
@@ -701,10 +757,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdToday(cmd.Args)
 	case "done":
 		return m.cmdDone(cmd.Args)
-	case "scratch":
-		return m.cmdScratch(cmd.Args)
-	case "inbox":
-		return m.cmdInbox(cmd.Args)
+	case "hibana":
+		return m.cmdHibana(cmd.Args)
 	case "sub":
 		return m.cmdSub(cmd.Args)
 	case "promote":
@@ -1147,6 +1201,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("j / Down") + "Move cursor down",
 		"  " + key("k / Up") + "Move cursor up",
 		"  " + key("Enter") + "Expand/collapse epic, or drill into issue",
+		"  " + key("n") + "Toggle private notes on board",
 		"  " + key("Esc") + "Back (detail -> board, or cancel command)",
 		"",
 		section("Detail View"),
@@ -1172,6 +1227,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":a @Name") + "Assign selected issue (alias: :assign)",
 		"  " + key(":a #N @Name") + "Assign specific issue",
 		"  " + key(":note \"text\"") + "Private annotation on selected issue",
+		"  " + key(":delnote") + "Clear notes from selected issue",
 		"  " + key(":pin") + "Pin selected issue to week focus",
 		"  " + key(":undo") + "Undo last pending operation",
 		"  " + key(":open") + "Open selected issue in browser",
@@ -1182,7 +1238,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":board") + "Switch to standup mode",
 		"",
 		section("Planning Mode"),
-		"  " + key("Tab / h / l") + "Switch section (Week/Today/Inbox/Scratch)",
+		"  " + key("Tab / h / l") + "Switch section (Week/Today/Hibana)",
 		"  " + key("j / k") + "Navigate items",
 		"  " + key("J / K") + "Reorder items (move up/down)",
 		"  " + key("Enter") + "Toggle done (today items / breakdown items)",
@@ -1191,9 +1247,8 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":promote") + "Promote breakdown item to today",
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
 		"  " + key(":done / :done N") + "Toggle done",
-		"  " + key(":scratch \"note\"") + "Add scratch note",
+		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
 		"  " + key(":del") + "Delete selected item",
-		"  " + key(":inbox clear") + "Clear inbox",
 		"  " + key(":recap") + "Generate weekly recap",
 		"  " + key(":stats") + "Show command usage stats",
 		"",
@@ -1245,24 +1300,6 @@ func (m AppModel) selectedTarget() *model.ProjectItem {
 // --- Planning mode key handler ---
 
 func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.planView.IsEditing() {
-		switch msg.String() {
-		case "enter":
-			if text := m.planView.ConfirmEdit(); text != "" {
-				m.statusMsg = "Updated"
-			} else {
-				m.statusMsg = "Edit cancelled (empty text)"
-			}
-		case "esc":
-			m.planView.CancelEdit()
-			m.statusMsg = ""
-		default:
-			cmd := m.planView.UpdateEdit(msg)
-			return m, cmd
-		}
-		return m, nil
-	}
-
 	switch msg.String() {
 	case "tab", "l":
 		m.planView.NextSection()
@@ -1285,12 +1322,7 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg
 		}
 	case "e":
-		if cmd, ok := m.planView.StartEdit(m.width); ok {
-			m.statusMsg = "Editing... Enter=save  Esc=cancel"
-			return m, cmd
-		} else {
-			m.statusMsg = "Cannot edit this item"
-		}
+		return m.openPlanEditor()
 	}
 	return m, nil
 }
@@ -1298,7 +1330,7 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // --- Mode switching ---
 
 func (m AppModel) cmdSwitchToPlan() (tea.Model, tea.Cmd) {
-	m.planView = NewPlanViewModel(m.plan, m.inbox, m.project)
+	m.planView = NewPlanViewModel(m.plan, m.project)
 	m.view = viewPlan
 	m.statusMsg = "Planning mode"
 	return m, nil
@@ -1346,7 +1378,27 @@ func (m AppModel) cmdNote(args []string) (tea.Model, tea.Cmd) {
 		})
 	}
 
+	m.board.SetAnnotations(m.annotations)
 	m.statusMsg = fmt.Sprintf("Note added to #%d (private)", target.Number)
+	return m, nil
+}
+
+func (m AppModel) cmdDelNote(args []string) (tea.Model, tea.Cmd) {
+	target := m.selectedTarget()
+	if target == nil {
+		m.statusMsg = "No issue selected"
+		return m, nil
+	}
+
+	for i := range m.annotations.Items {
+		if m.annotations.Items[i].IssueNum == target.Number {
+			m.annotations.Items = append(m.annotations.Items[:i], m.annotations.Items[i+1:]...)
+			m.board.SetAnnotations(m.annotations)
+			m.statusMsg = fmt.Sprintf("Notes cleared from #%d", target.Number)
+			return m, nil
+		}
+	}
+	m.statusMsg = fmt.Sprintf("No notes on #%d", target.Number)
 	return m, nil
 }
 
@@ -1431,7 +1483,7 @@ func (m AppModel) cmdGoal(args []string) (tea.Model, tea.Cmd) {
 
 	text := strings.Join(args, " ")
 	m.plan.WeekFocus = append(m.plan.WeekFocus, model.FocusItem{Text: text})
-	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetData(m.plan, m.project)
 	m.statusMsg = fmt.Sprintf("Added goal: %s", text)
 	return m, nil
 }
@@ -1464,7 +1516,7 @@ func (m AppModel) cmdToday(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.plan.Today = append(m.plan.Today, item)
-	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetData(m.plan, m.project)
 	m.statusMsg = fmt.Sprintf("Added to today: %s", item.Text)
 	return m, nil
 }
@@ -1478,7 +1530,7 @@ func (m AppModel) cmdDone(args []string) (tea.Model, tea.Cmd) {
 				idx := fi.focusIdx
 				if idx >= 0 && idx < len(m.plan.Today) {
 					m.plan.Today[idx].Done = !m.plan.Today[idx].Done
-					m.planView.SetData(m.plan, m.inbox, m.project)
+					m.planView.SetData(m.plan, m.project)
 					if m.plan.Today[idx].Done {
 						m.statusMsg = fmt.Sprintf("Completed: %s", m.plan.Today[idx].Text)
 					} else {
@@ -1498,7 +1550,7 @@ func (m AppModel) cmdDone(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.plan.Today[n-1].Done = !m.plan.Today[n-1].Done
-	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetData(m.plan, m.project)
 	if m.plan.Today[n-1].Done {
 		m.statusMsg = fmt.Sprintf("Completed: %s", m.plan.Today[n-1].Text)
 	} else {
@@ -1507,36 +1559,95 @@ func (m AppModel) cmdDone(args []string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m AppModel) cmdScratch(args []string) (tea.Model, tea.Cmd) {
+func (m AppModel) cmdHibana(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.statusMsg = "Usage: :scratch \"your note\""
-		return m, nil
+		// No args: open editor for a new note
+		return m.openEditorForNewHibana()
 	}
 	text := strings.Join(args, " ")
 	m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
 		Text:      text,
 		CreatedAt: time.Now(),
 	})
-	m.planView.SetData(m.plan, m.inbox, m.project)
-	m.planView.SetSection(sectionScratch)
+	m.planView.SetData(m.plan, m.project)
+	m.planView.SetSection(sectionHibana)
 	m.view = viewPlan
-	m.statusMsg = "Scratch note added"
+	m.statusMsg = "Note added"
 	return m, nil
 }
 
-func (m AppModel) cmdInbox(args []string) (tea.Model, tea.Cmd) {
-	if len(args) == 0 {
-		m.statusMsg = "Usage: :inbox clear"
+func (m AppModel) openPlanEditor() (tea.Model, tea.Cmd) {
+	fi := m.planView.currentFlat()
+	if fi == nil {
+		m.statusMsg = "No item selected"
 		return m, nil
 	}
-	if args[0] == "clear" {
-		m.inbox = &model.Inbox{}
-		m.planView.SetData(m.plan, m.inbox, m.project)
-		m.statusMsg = "Inbox cleared"
+
+	section := m.planView.section
+	idx := fi.focusIdx
+	subIdx := fi.subIdx
+
+	// Determine current text; reject issue-linked items
+	var text string
+	switch section {
+	case sectionWeekFocus:
+		if subIdx >= 0 {
+			sub := m.plan.WeekFocus[idx].SubItems[subIdx]
+			if sub.IssueNum > 0 {
+				m.statusMsg = "Cannot edit issue-linked item"
+				return m, nil
+			}
+			text = sub.Text
+		} else {
+			item := m.plan.WeekFocus[idx]
+			if item.IssueNum > 0 {
+				m.statusMsg = "Cannot edit issue-linked item"
+				return m, nil
+			}
+			text = item.Text
+		}
+	case sectionToday:
+		item := m.plan.Today[idx]
+		if item.IssueNum > 0 {
+			m.statusMsg = "Cannot edit issue-linked item"
+			return m, nil
+		}
+		text = item.Text
+	case sectionHibana:
+		text = m.plan.Scratch[idx].Text
+	default:
+		m.statusMsg = "Cannot edit this item"
 		return m, nil
 	}
-	m.statusMsg = fmt.Sprintf("Unknown inbox command: %s", args[0])
-	return m, nil
+
+	return m.launchEditor(text, section, idx, subIdx)
+}
+
+func (m AppModel) openEditorForNewHibana() (tea.Model, tea.Cmd) {
+	return m.launchEditor("", sectionHibana, -1, -1)
+}
+
+func (m AppModel) launchEditor(text string, section planSection, idx, subIdx int) (tea.Model, tea.Cmd) {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim"
+	}
+
+	f, err := os.CreateTemp("", "tack-plan-*.md")
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating temp file: %s", err)
+		return m, nil
+	}
+	tmpFile := f.Name()
+	if text != "" {
+		f.WriteString(text)
+	}
+	f.Close()
+
+	c := exec.Command(editor, tmpFile)
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{tmpPath: tmpFile, section: section, idx: idx, subIdx: subIdx, err: err}
+	})
 }
 
 func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {
@@ -1581,7 +1692,7 @@ func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.plan.WeekFocus[focusIdx].SubItems = append(m.plan.WeekFocus[focusIdx].SubItems, sub)
-	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetData(m.plan, m.project)
 	m.statusMsg = fmt.Sprintf("Added breakdown to goal %d: %s", focusIdx+1, sub.Text)
 	return m, nil
 }
@@ -1601,7 +1712,7 @@ func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
 		Text:     sub.Text,
 		IssueNum: sub.IssueNum,
 	})
-	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetData(m.plan, m.project)
 	m.statusMsg = fmt.Sprintf("Promoted to today: %s", sub.Text)
 	return m, nil
 }
@@ -1767,18 +1878,13 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 					m.plan.Today = append(m.plan.Today[:idx], m.plan.Today[idx+1:]...)
 					m.statusMsg = fmt.Sprintf("Removed from today: %s", removed)
 				}
-			case sectionScratch:
+			case sectionHibana:
 				if idx >= 0 && idx < len(m.plan.Scratch) {
 					m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
-					m.statusMsg = "Scratch note removed"
-				}
-			case sectionInbox:
-				if m.inbox != nil && idx >= 0 && idx < len(m.inbox.Items) {
-					m.inbox.Items = append(m.inbox.Items[:idx], m.inbox.Items[idx+1:]...)
-					m.statusMsg = "Inbox item removed"
+					m.statusMsg = "Note removed"
 				}
 			}
-			m.planView.SetData(m.plan, m.inbox, m.project)
+			m.planView.SetData(m.plan, m.project)
 			return m, nil
 		}
 	}
@@ -1817,20 +1923,14 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 			m.plan.Today = append(m.plan.Today[:idx], m.plan.Today[idx+1:]...)
 			m.statusMsg = fmt.Sprintf("Removed from today: %s", removed)
 		}
-	case sectionScratch:
+	case sectionHibana:
 		idx := fi.focusIdx
 		if idx >= 0 && idx < len(m.plan.Scratch) {
 			m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
-			m.statusMsg = "Scratch note removed"
-		}
-	case sectionInbox:
-		idx := fi.focusIdx
-		if m.inbox != nil && idx >= 0 && idx < len(m.inbox.Items) {
-			m.inbox.Items = append(m.inbox.Items[:idx], m.inbox.Items[idx+1:]...)
-			m.statusMsg = "Inbox item removed"
+			m.statusMsg = "Note removed"
 		}
 	}
-	m.planView.SetData(m.plan, m.inbox, m.project)
+	m.planView.SetData(m.plan, m.project)
 	return m, nil
 }
 
@@ -1874,7 +1974,7 @@ func (m AppModel) View() string {
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
 	case viewPlan:
-		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  e=edit  :board=back  :goal/:today/:scratch  :=cmd")
+		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  e=edit  :board=back  :goal/:today/:hibana  :=cmd")
 	default:
 		pending := ""
 		if m.ops.Len() > 0 {

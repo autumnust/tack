@@ -32,6 +32,8 @@ type BoardModel struct {
 	visibleItems []listItem
 	scrollOffset int
 	viewHeight   int
+	showNotes    bool               // toggle private annotations
+	annotations  *model.Annotations // reference to annotations data
 }
 
 func NewBoardModel(persons []model.PersonGroup) BoardModel {
@@ -53,6 +55,18 @@ func NewBoardModel(persons []model.PersonGroup) BoardModel {
 
 func epicKey(personIdx, groupIdx int) string {
 	return fmt.Sprintf("%d:%d", personIdx, groupIdx)
+}
+
+func (b *BoardModel) SetAnnotations(ann *model.Annotations) {
+	b.annotations = ann
+}
+
+func (b *BoardModel) ToggleNotes() {
+	b.showNotes = !b.showNotes
+}
+
+func (b *BoardModel) ShowingNotes() bool {
+	return b.showNotes
 }
 
 func (b *BoardModel) SetPersons(persons []model.PersonGroup) {
@@ -301,10 +315,24 @@ func (b *BoardModel) View(width, height int) string {
 			} else {
 				title = issueTitleStyle.Render(title)
 			}
-			line := fmt.Sprintf("  %s %s %s  %s", branch, num, title, status)
+			noteHint := ""
+			notes := b.notesForIssue(item.issue.Number)
+			if len(notes) > 0 && !b.showNotes {
+				noteHint = helpStyle.Render("  ✎")
+			}
+			line := fmt.Sprintf("  %s %s %s  %s%s", branch, num, title, status, noteHint)
 			sb.WriteString(cursor + line)
 		}
 		sb.WriteString("\n")
+
+		// Show annotations inline when toggled on
+		if b.showNotes && item.kind == kindIssue {
+			notes := b.notesForIssue(item.issue.Number)
+			noteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
+			for _, n := range notes {
+				sb.WriteString("        " + noteStyle.Render("✎ "+n) + "\n")
+			}
+		}
 	}
 
 	// Scroll indicator
@@ -318,6 +346,18 @@ func (b *BoardModel) View(width, height int) string {
 	}
 
 	return sb.String()
+}
+
+func (b *BoardModel) notesForIssue(num int) []string {
+	if b.annotations == nil {
+		return nil
+	}
+	for _, a := range b.annotations.Items {
+		if a.IssueNum == num {
+			return a.Notes
+		}
+	}
+	return nil
 }
 
 func renderStatus(status string) string {

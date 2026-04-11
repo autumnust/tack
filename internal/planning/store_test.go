@@ -119,50 +119,6 @@ func TestLoadAnnotations_MissingFile(t *testing.T) {
 	}
 }
 
-func TestInbox_Roundtrip(t *testing.T) {
-	s := tempStore(t)
-	inbox := &model.Inbox{
-		Items: []model.InboxItem{
-			{From: "bot", Text: "PR merged", CreatedAt: time.Now().Truncate(time.Second)},
-		},
-	}
-	if err := s.SaveInbox(inbox); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := s.LoadInbox()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.Items) != 1 || loaded.Items[0].From != "bot" {
-		t.Error("inbox round-trip failed")
-	}
-}
-
-func TestLoadInbox_MissingFile(t *testing.T) {
-	s := tempStore(t)
-	inbox, err := s.LoadInbox()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(inbox.Items) != 0 {
-		t.Error("expected empty inbox")
-	}
-}
-
-func TestClearInbox(t *testing.T) {
-	s := tempStore(t)
-	inbox := &model.Inbox{Items: []model.InboxItem{{Text: "item"}}}
-	s.SaveInbox(inbox)
-
-	if err := s.ClearInbox(); err != nil {
-		t.Fatal(err)
-	}
-	loaded, _ := s.LoadInbox()
-	if len(loaded.Items) != 0 {
-		t.Error("expected empty inbox after clear")
-	}
-}
-
 func TestRollover_DoneYesterday_Archived(t *testing.T) {
 	plan := &model.Plan{
 		Today: []model.TodoItem{

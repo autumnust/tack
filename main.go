@@ -22,7 +22,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to config file (default: config.local.yaml or config.yaml)")
 	planMode := flag.Bool("plan", false, "start in planning mode")
-	scratchText := flag.String("scratch", "", "add a scratch note and exit (e.g. --scratch \"idea\")")
+	hibanaText := flag.String("hibana", "", "add a quick note and exit (e.g. --hibana \"idea\")")
 	statsMode := flag.Bool("stats", false, "print command usage stats and exit")
 	recapMode := flag.Bool("recap", false, "generate weekly recap and exit (for cron)")
 	whichConfig := flag.Bool("which-config", false, "print which config file would be loaded and exit")
@@ -78,8 +78,8 @@ func main() {
 		generateRecap(config)
 		return
 	}
-	if *scratchText != "" {
-		addScratch(config, *scratchText)
+	if *hibanaText != "" {
+		addHibana(config, *hibanaText)
 		return
 	}
 
@@ -194,7 +194,7 @@ func generateRecap(config model.Config) {
 	store.SaveRecap(weekLabel, recap)
 }
 
-func addScratch(config model.Config, text string) {
+func addHibana(config model.Config, text string) {
 	planDir := config.Planning.Dir
 	if planDir == "" {
 		planDir = "~/.tack"
@@ -217,7 +217,7 @@ func addScratch(config model.Config, text string) {
 		fmt.Fprintf(os.Stderr, "Error saving: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Scratch added: %s\n", text)
+	fmt.Printf("Hibana: %s\n", text)
 }
 
 func findConfig() string {

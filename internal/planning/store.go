@@ -37,8 +37,7 @@ func (s *Store) Dir() string { return s.dir }
 
 func (s *Store) planPath() string       { return filepath.Join(s.dir, "plan.yaml") }
 func (s *Store) annotationsPath() string { return filepath.Join(s.dir, "annotations.yaml") }
-func (s *Store) inboxPath() string       { return filepath.Join(s.dir, "inbox.yaml") }
-func (s *Store) scratchPath() string     { return filepath.Join(s.dir, "scratch.md") }
+func (s *Store) hibanaPath() string { return filepath.Join(s.dir, "hibana.md") }
 
 func (s *Store) LoadPlan() (*model.Plan, error) {
 	var plan model.Plan
@@ -80,27 +79,6 @@ func (s *Store) GetAnnotation(ann *model.Annotations, issueNum int) *model.Annot
 		}
 	}
 	return nil
-}
-
-// Inbox
-
-func (s *Store) LoadInbox() (*model.Inbox, error) {
-	var inbox model.Inbox
-	if err := s.loadYAML(s.inboxPath(), &inbox); err != nil {
-		if os.IsNotExist(err) {
-			return &model.Inbox{}, nil
-		}
-		return nil, err
-	}
-	return &inbox, nil
-}
-
-func (s *Store) SaveInbox(inbox *model.Inbox) error {
-	return s.saveYAML(s.inboxPath(), inbox)
-}
-
-func (s *Store) ClearInbox() error {
-	return s.SaveInbox(&model.Inbox{})
 }
 
 // Rollover archives done items from previous days and keeps undone items

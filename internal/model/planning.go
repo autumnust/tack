@@ -54,16 +54,3 @@ type Annotation struct {
 type Annotations struct {
 	Items []Annotation `yaml:"items"`
 }
-
-// InboxItem is a task/note pushed from an external process.
-type InboxItem struct {
-	From      string    `yaml:"from,omitempty"`
-	Text      string    `yaml:"text"`
-	Refs      []string  `yaml:"refs,omitempty"`       // issue refs like "org/repo#123"
-	CreatedAt time.Time `yaml:"created_at"`
-}
-
-// Inbox holds items pushed from external sources.
-type Inbox struct {
-	Items []InboxItem `yaml:"items"`
-}
