@@ -4,10 +4,11 @@ import "time"
 
 // Plan holds the user's personal planning data.
 type Plan struct {
-	WeekFocus []FocusItem   `yaml:"week_focus,omitempty"`
-	Today     []TodoItem    `yaml:"today,omitempty"`
-	Completed []TodoItem    `yaml:"completed,omitempty"` // archived done items from previous days
-	Scratch   []ScratchNote `yaml:"scratch,omitempty"`
+	WeekFocus      []FocusItem     `yaml:"week_focus,omitempty"`
+	Today          []TodoItem      `yaml:"today,omitempty"`
+	Completed      []TodoItem      `yaml:"completed,omitempty"` // archived done items from previous days
+	Scratch        []ScratchNote   `yaml:"scratch,omitempty"`
+	MonthlyTargets []MonthlyTarget `yaml:"monthly_targets,omitempty"`
 }
 
 // FocusItem is a weekly focus entry — either a freeform goal or a pinned GitHub issue.
@@ -39,6 +40,14 @@ type TodoItem struct {
 type ScratchNote struct {
 	Text      string    `yaml:"text"`
 	CreatedAt time.Time `yaml:"created_at"`
+}
+
+// MonthlyTarget is a high-level target for the month.
+type MonthlyTarget struct {
+	Text      string    `yaml:"text"`
+	Done      bool      `yaml:"done,omitempty"`
+	CreatedAt time.Time `yaml:"created_at,omitempty"`
+	DoneAt    time.Time `yaml:"done_at,omitempty"`
 }
 
 // Annotation is a private note attached to a GitHub issue.

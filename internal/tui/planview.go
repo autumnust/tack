@@ -12,9 +12,10 @@ import (
 type planSection int
 
 const (
-	sectionWeekFocus planSection = iota
+	sectionWeekFocus      planSection = iota
 	sectionToday
 	sectionHibana
+	sectionMonthlyTarget
 	sectionCount
 )
 
@@ -26,6 +27,8 @@ func sectionName(s planSection) string {
 		return "Today"
 	case sectionHibana:
 		return "Hibana"
+	case sectionMonthlyTarget:
+		return "Monthly Target"
 	}
 	return ""
 }
@@ -82,6 +85,10 @@ func (m *PlanViewModel) rebuildFlat() {
 	case sectionHibana:
 		for i := range m.plan.Scratch {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
+		}
+	case sectionMonthlyTarget:
+		for i := range m.plan.MonthlyTargets {
+			m.flatItems = append(m.flatItems, flatItem{section: sectionMonthlyTarget, focusIdx: i, subIdx: -1})
 		}
 	}
 	if m.cursorIdx >= len(m.flatItems) {
@@ -173,6 +180,13 @@ func (m *PlanViewModel) MoveUp() bool {
 			m.rebuildFlat()
 			return true
 		}
+	case sectionMonthlyTarget:
+		if fi.focusIdx > 0 {
+			m.plan.MonthlyTargets[fi.focusIdx], m.plan.MonthlyTargets[fi.focusIdx-1] = m.plan.MonthlyTargets[fi.focusIdx-1], m.plan.MonthlyTargets[fi.focusIdx]
+			m.cursorIdx--
+			m.rebuildFlat()
+			return true
+		}
 	}
 	return false
 }
@@ -219,6 +233,13 @@ func (m *PlanViewModel) MoveDown() bool {
 			m.rebuildFlat()
 			return true
 		}
+	case sectionMonthlyTarget:
+		if fi.focusIdx < len(m.plan.MonthlyTargets)-1 {
+			m.plan.MonthlyTargets[fi.focusIdx], m.plan.MonthlyTargets[fi.focusIdx+1] = m.plan.MonthlyTargets[fi.focusIdx+1], m.plan.MonthlyTargets[fi.focusIdx]
+			m.cursorIdx++
+			m.rebuildFlat()
+			return true
+		}
 	}
 	return false
 }
@@ -242,6 +263,19 @@ func (m *PlanViewModel) ToggleDone() (string, bool) {
 		}
 	case sectionToday:
 		item := &m.plan.Today[fi.focusIdx]
+		item.Done = !item.Done
+		if item.Done {
+			item.DoneAt = time.Now()
+		} else {
+			item.DoneAt = time.Time{}
+		}
+		m.rebuildFlat()
+		if item.Done {
+			return fmt.Sprintf("Completed: %s", item.Text), true
+		}
+		return fmt.Sprintf("Uncompleted: %s", item.Text), true
+	case sectionMonthlyTarget:
+		item := &m.plan.MonthlyTargets[fi.focusIdx]
 		item.Done = !item.Done
 		if item.Done {
 			item.DoneAt = time.Now()
@@ -303,6 +337,8 @@ func (m PlanViewModel) View(width, height int) string {
 			count = len(m.plan.Today)
 		case sectionHibana:
 			count = len(m.plan.Scratch)
+		case sectionMonthlyTarget:
+			count = len(m.plan.MonthlyTargets)
 		}
 		label := fmt.Sprintf("%s (%d)", sectionName(i), count)
 		if i == m.section {
@@ -316,9 +352,10 @@ func (m PlanViewModel) View(width, height int) string {
 
 	if len(m.flatItems) == 0 {
 		hints := map[planSection]string{
-			sectionWeekFocus: "  No weekly focus items. Use :goal or :pin to add.",
-			sectionToday:     "  No tasks for today. Use :today to add.",
-			sectionHibana:    "  No notes yet. Use :hibana to jot something down.",
+			sectionWeekFocus:    "  No weekly focus items. Use :goal or :pin to add.",
+			sectionToday:        "  No tasks for today. Use :today to add.",
+			sectionHibana:       "  No notes yet. Use :hibana to jot something down.",
+			sectionMonthlyTarget: "  No monthly targets. Use :target to add.",
 		}
 		sb.WriteString(helpStyle.Render(hints[m.section]))
 		return sb.String()
@@ -341,6 +378,8 @@ func (m PlanViewModel) View(width, height int) string {
 			sb.WriteString(m.renderTodoItem(cursor, fi.focusIdx))
 		case sectionHibana:
 			sb.WriteString(m.renderHibanaItem(cursor, fi.focusIdx))
+		case sectionMonthlyTarget:
+			sb.WriteString(m.renderMonthlyTargetItem(cursor, fi.focusIdx))
 		}
 	}
 
@@ -533,4 +572,27 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 		}
 	}
 	return result
+}
+
+func (m PlanViewModel) renderMonthlyTargetItem(cursor string, idx int) string {
+	item := m.plan.MonthlyTargets[idx]
+	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+		Render(fmt.Sprintf("%d", idx+1))
+
+	check := "[ ]"
+	textStyle := issueTitleStyle
+	if item.Done {
+		check = "[x]"
+		textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
+	}
+
+	age := ""
+	if !item.CreatedAt.IsZero() {
+		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(item.CreatedAt)))
+	}
+
+	// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
+	maxText := m.width - 10 - lipgloss.Width(age)
+	text := truncate(item.Text, maxText)
+	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), age)
 }

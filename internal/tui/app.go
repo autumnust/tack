@@ -516,6 +516,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.plan.Scratch[msg.idx].Text = text
 				m.statusMsg = "Note updated"
 			}
+		case sectionMonthlyTarget:
+			if msg.idx < len(m.plan.MonthlyTargets) {
+				m.plan.MonthlyTargets[msg.idx].Text = text
+				m.statusMsg = "Updated"
+			}
 		}
 		m.planView.SetData(m.plan, m.project)
 		m.planView.SetSection(msg.section)
@@ -759,6 +764,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdDone(cmd.Args)
 	case "hibana":
 		return m.cmdHibana(cmd.Args)
+	case "target":
+		return m.cmdTarget(cmd.Args)
 	case "sub":
 		return m.cmdSub(cmd.Args)
 	case "promote":
@@ -1238,7 +1245,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":board") + "Switch to standup mode",
 		"",
 		section("Planning Mode"),
-		"  " + key("Tab / h / l") + "Switch section (Week/Today/Hibana)",
+		"  " + key("Tab / h / l") + "Switch section (Week/Today/Hibana/Target)",
 		"  " + key("j / k") + "Navigate items",
 		"  " + key("J / K") + "Reorder items (move up/down)",
 		"  " + key("Enter") + "Toggle done (today items / breakdown items)",
@@ -1248,6 +1255,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
+		"  " + key(":target \"text\"") + "Add monthly target",
 		"  " + key(":del") + "Delete selected item",
 		"  " + key(":recap") + "Generate weekly recap",
 		"  " + key(":stats") + "Show command usage stats",
@@ -1576,6 +1584,23 @@ func (m AppModel) cmdHibana(args []string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m AppModel) cmdTarget(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :target \"your monthly target\""
+		return m, nil
+	}
+	text := strings.Join(args, " ")
+	m.plan.MonthlyTargets = append(m.plan.MonthlyTargets, model.MonthlyTarget{
+		Text:      text,
+		CreatedAt: time.Now(),
+	})
+	m.planView.SetData(m.plan, m.project)
+	m.planView.SetSection(sectionMonthlyTarget)
+	m.view = viewPlan
+	m.statusMsg = "Monthly target added"
+	return m, nil
+}
+
 func (m AppModel) openPlanEditor() (tea.Model, tea.Cmd) {
 	fi := m.planView.currentFlat()
 	if fi == nil {
@@ -1615,6 +1640,8 @@ func (m AppModel) openPlanEditor() (tea.Model, tea.Cmd) {
 		text = item.Text
 	case sectionHibana:
 		text = m.plan.Scratch[idx].Text
+	case sectionMonthlyTarget:
+		text = m.plan.MonthlyTargets[idx].Text
 	default:
 		m.statusMsg = "Cannot edit this item"
 		return m, nil
@@ -1883,6 +1910,12 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 					m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
 					m.statusMsg = "Note removed"
 				}
+			case sectionMonthlyTarget:
+				if idx >= 0 && idx < len(m.plan.MonthlyTargets) {
+					removed := m.plan.MonthlyTargets[idx].Text
+					m.plan.MonthlyTargets = append(m.plan.MonthlyTargets[:idx], m.plan.MonthlyTargets[idx+1:]...)
+					m.statusMsg = fmt.Sprintf("Removed target: %s", removed)
+				}
 			}
 			m.planView.SetData(m.plan, m.project)
 			return m, nil
@@ -1928,6 +1961,13 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 		if idx >= 0 && idx < len(m.plan.Scratch) {
 			m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
 			m.statusMsg = "Note removed"
+		}
+	case sectionMonthlyTarget:
+		idx := fi.focusIdx
+		if idx >= 0 && idx < len(m.plan.MonthlyTargets) {
+			removed := m.plan.MonthlyTargets[idx].Text
+			m.plan.MonthlyTargets = append(m.plan.MonthlyTargets[:idx], m.plan.MonthlyTargets[idx+1:]...)
+			m.statusMsg = fmt.Sprintf("Removed target: %s", removed)
 		}
 	}
 	m.planView.SetData(m.plan, m.project)

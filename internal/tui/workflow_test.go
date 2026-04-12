@@ -1389,6 +1389,177 @@ func TestInitBoardModeNoCache(t *testing.T) {
 	}
 }
 
+// Test: :target adds a monthly target and switches to the target tab
+func TestTargetAddAndSection(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	app = sendCommand(t, app, `target "Ship v1.0"`)
+	assertView(t, app, viewPlan)
+	if app.planView.section != sectionMonthlyTarget {
+		t.Fatalf("expected sectionMonthlyTarget, got %d", app.planView.section)
+	}
+	if len(app.plan.MonthlyTargets) != 1 {
+		t.Fatalf("expected 1 target, got %d", len(app.plan.MonthlyTargets))
+	}
+	if app.plan.MonthlyTargets[0].Text != "Ship v1.0" {
+		t.Errorf("expected text 'Ship v1.0', got %q", app.plan.MonthlyTargets[0].Text)
+	}
+	if app.plan.MonthlyTargets[0].CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set")
+	}
+	assertStatus(t, app, "Monthly target added")
+}
+
+// Test: Toggle done on monthly target via Enter key
+func TestTargetToggleDone(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `target "Ship v1.0"`)
+
+	// Press Enter to toggle done
+	app = sendKeys(t, app, "enter")
+	if !app.plan.MonthlyTargets[0].Done {
+		t.Fatal("expected target to be done after Enter")
+	}
+	if app.plan.MonthlyTargets[0].DoneAt.IsZero() {
+		t.Error("expected DoneAt to be set")
+	}
+	assertStatus(t, app, "Completed: Ship v1.0")
+
+	// Toggle back
+	app = sendKeys(t, app, "enter")
+	if app.plan.MonthlyTargets[0].Done {
+		t.Fatal("expected target to be undone after second Enter")
+	}
+	assertStatus(t, app, "Uncompleted: Ship v1.0")
+}
+
+// Test: Delete monthly target via cursor
+func TestTargetDeleteCursor(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `target "A"`)
+	app = sendCommand(t, app, `target "B"`)
+
+	// Cursor is on first item, delete it
+	app = sendCommand(t, app, "del")
+	if len(app.plan.MonthlyTargets) != 1 {
+		t.Fatalf("expected 1 target after delete, got %d", len(app.plan.MonthlyTargets))
+	}
+	if app.plan.MonthlyTargets[0].Text != "B" {
+		t.Errorf("expected remaining target 'B', got %q", app.plan.MonthlyTargets[0].Text)
+	}
+}
+
+// Test: Delete monthly target by line number
+func TestTargetDeleteByLineNumber(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `target "A"`)
+	app = sendCommand(t, app, `target "B"`)
+	app = sendCommand(t, app, `target "C"`)
+
+	app = sendCommand(t, app, "del 2")
+	if len(app.plan.MonthlyTargets) != 2 {
+		t.Fatalf("expected 2 targets after del 2, got %d", len(app.plan.MonthlyTargets))
+	}
+	if app.plan.MonthlyTargets[0].Text != "A" || app.plan.MonthlyTargets[1].Text != "C" {
+		t.Errorf("expected [A, C], got [%s, %s]", app.plan.MonthlyTargets[0].Text, app.plan.MonthlyTargets[1].Text)
+	}
+}
+
+// Test: Reorder monthly targets with J/K
+func TestTargetReorder(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `target "First"`)
+	app = sendCommand(t, app, `target "Second"`)
+
+	// Cursor is on First (idx 0), press J to swap down
+	app = sendKeys(t, app, "J")
+	if app.plan.MonthlyTargets[0].Text != "Second" || app.plan.MonthlyTargets[1].Text != "First" {
+		t.Errorf("expected [Second, First] after J, got [%s, %s]",
+			app.plan.MonthlyTargets[0].Text, app.plan.MonthlyTargets[1].Text)
+	}
+
+	// Now cursor is on First (idx 1), press K to swap back up
+	app = sendKeys(t, app, "K")
+	if app.plan.MonthlyTargets[0].Text != "First" || app.plan.MonthlyTargets[1].Text != "Second" {
+		t.Errorf("expected [First, Second] after K, got [%s, %s]",
+			app.plan.MonthlyTargets[0].Text, app.plan.MonthlyTargets[1].Text)
+	}
+}
+
+// Test: Tab navigation cycles through all 4 sections including monthly target
+func TestTabCyclesToMonthlyTarget(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	assertView(t, app, viewPlan)
+
+	// Start at WeekFocus (0), tab through all sections
+	if app.planView.section != sectionWeekFocus {
+		t.Fatalf("expected sectionWeekFocus, got %d", app.planView.section)
+	}
+	app = sendKeys(t, app, "tab") // -> Today
+	if app.planView.section != sectionToday {
+		t.Fatalf("expected sectionToday, got %d", app.planView.section)
+	}
+	app = sendKeys(t, app, "tab") // -> Hibana
+	if app.planView.section != sectionHibana {
+		t.Fatalf("expected sectionHibana, got %d", app.planView.section)
+	}
+	app = sendKeys(t, app, "tab") // -> Monthly Target
+	if app.planView.section != sectionMonthlyTarget {
+		t.Fatalf("expected sectionMonthlyTarget, got %d", app.planView.section)
+	}
+	app = sendKeys(t, app, "tab") // -> wraps back to WeekFocus
+	if app.planView.section != sectionWeekFocus {
+		t.Fatalf("expected wrap to sectionWeekFocus, got %d", app.planView.section)
+	}
+}
+
+// Test: Edit monthly target via editorFinishedMsg
+func TestTargetEdit(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app = sendCommand(t, app, `target "draft"`)
+
+	// Simulate editor returning updated text
+	tmpFile := t.TempDir() + "/target.md"
+	os.WriteFile(tmpFile, []byte("finalized target"), 0644)
+	m, _ := app.Update(editorFinishedMsg{tmpPath: tmpFile, section: sectionMonthlyTarget, idx: 0, subIdx: -1, err: nil})
+	app = m.(AppModel)
+
+	if app.plan.MonthlyTargets[0].Text != "finalized target" {
+		t.Errorf("expected 'finalized target', got %q", app.plan.MonthlyTargets[0].Text)
+	}
+	assertStatus(t, app, "Updated")
+}
+
+// Test: :target with no args shows usage
+func TestTargetNoArgs(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "target")
+	assertStatus(t, app, "Usage:")
+}
+
+// Test: Monthly target renders without panic when empty
+func TestTargetEmptyView(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app = sendCommand(t, app, "plan")
+
+	// Navigate to monthly target tab
+	app.planView.SetSection(sectionMonthlyTarget)
+	output := app.View()
+	if !strings.Contains(output, "Monthly Target") {
+		t.Error("expected 'Monthly Target' tab label in output")
+	}
+	if !strings.Contains(output, ":target") {
+		t.Error("expected empty-state hint mentioning :target")
+	}
+}
+
 // Test 77: fetchData with nil client returns error, doesn't panic
 func TestFetchDataNilClient(t *testing.T) {
 	app := newTestApp()
