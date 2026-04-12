@@ -27,10 +27,10 @@ source ~/.zshrc
 Tack stores planning data (plan.yaml, annotations, inbox) in a configurable directory. For synced planning across machines, use an Obsidian vault or similar:
 
 ```bash
-gh repo clone autumnust/leisure_vault ~/Documents/leisure_vault
+gh repo clone autumnust/leisure_vault ~/leisure_vault
 ```
 
-The planning data lives in `~/Documents/leisure_vault/tack/`:
+The planning data lives in `~/leisure_vault/tack/`:
 - `plan.yaml` — weekly goals, today items, scratch notes, completed archive
 - `annotations.yaml` — private notes on GitHub issues
 - `inbox.yaml` — incoming items
@@ -65,7 +65,7 @@ team:
 status_field: "Status"
 
 planning:
-  dir: "~/Documents/leisure_vault/tack"
+  dir: "~/leisure_vault/tack"
   max_week_focus: 3
 EOF
 ```
