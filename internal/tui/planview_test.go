@@ -23,58 +23,13 @@ func makePlanWithToday(n int) *model.Plan {
 	return p
 }
 
-func TestPlanView_ScrollFollowsCursor(t *testing.T) {
-	plan := makePlanWithScratch(20)
-	m := NewPlanViewModel(plan, nil)
-	m.SetSection(sectionHibana)
-	m.viewHeight = 5
-
-	// Move cursor past the viewport
-	for i := 0; i < 10; i++ {
-		m.CursorDown()
-	}
-
-	if m.cursorIdx != 10 {
-		t.Fatalf("expected cursorIdx=10, got %d", m.cursorIdx)
-	}
-	if m.cursorIdx < m.scrollOffset || m.cursorIdx >= m.scrollOffset+m.viewHeight {
-		t.Errorf("cursor %d not visible in scroll window [%d, %d)",
-			m.cursorIdx, m.scrollOffset, m.scrollOffset+m.viewHeight)
-	}
-}
-
-func TestPlanView_ScrollUpAdjusts(t *testing.T) {
-	plan := makePlanWithScratch(20)
-	m := NewPlanViewModel(plan, nil)
-	m.SetSection(sectionHibana)
-	m.viewHeight = 5
-
-	// Move to bottom
-	for i := 0; i < 19; i++ {
-		m.CursorDown()
-	}
-	// Move back up past the visible window
-	for i := 0; i < 19; i++ {
-		m.CursorUp()
-	}
-
-	if m.cursorIdx != 0 {
-		t.Fatalf("expected cursorIdx=0, got %d", m.cursorIdx)
-	}
-	if m.scrollOffset != 0 {
-		t.Errorf("expected scrollOffset=0 after scrolling back to top, got %d", m.scrollOffset)
-	}
-}
-
 func TestPlanView_ViewRendersOnlyVisibleItems(t *testing.T) {
 	plan := makePlanWithToday(20)
 	m := NewPlanViewModel(plan, nil)
 	m.SetSection(sectionToday)
 
-	output := m.View(80, 16) // viewHeight = 16 - 6 = 10
+	output := m.View(80, 16) // availLines = 16 - 6 = 10
 
-	// Should not contain item 15 (0-indexed) which would show as line "16"
-	// but should contain item 0 which shows as line "1"
 	if m.scrollOffset != 0 {
 		t.Errorf("expected scrollOffset=0 initially, got %d", m.scrollOffset)
 	}
@@ -93,6 +48,38 @@ func TestPlanView_ViewRendersOnlyVisibleItems(t *testing.T) {
 	}
 }
 
+func TestPlanView_ScrollUpThroughView(t *testing.T) {
+	plan := makePlanWithToday(20)
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionToday)
+
+	// Scroll to the bottom
+	for i := 0; i < 19; i++ {
+		m.CursorDown()
+	}
+	m.View(80, 16)
+	if m.scrollOffset == 0 {
+		t.Fatal("expected scrollOffset > 0 after scrolling down")
+	}
+
+	// Scroll back to top
+	for i := 0; i < 19; i++ {
+		m.CursorUp()
+	}
+	output := m.View(80, 16)
+
+	if m.cursorIdx != 0 {
+		t.Fatalf("expected cursorIdx=0, got %d", m.cursorIdx)
+	}
+	if m.scrollOffset != 0 {
+		t.Errorf("expected scrollOffset=0 after scrolling back to top, got %d", m.scrollOffset)
+	}
+	// First item (labeled "1") should be visible
+	if !strings.Contains(output, "1") {
+		t.Error("first item not visible after scrolling back to top")
+	}
+}
+
 func TestPlanView_SectionChangeResetsScroll(t *testing.T) {
 	plan := makePlanWithScratch(20)
 	plan.Today = make([]model.TodoItem, 5)
@@ -102,12 +89,12 @@ func TestPlanView_SectionChangeResetsScroll(t *testing.T) {
 
 	m := NewPlanViewModel(plan, nil)
 	m.SetSection(sectionHibana)
-	m.viewHeight = 5
 
-	// Scroll down
+	// Scroll down through View
 	for i := 0; i < 10; i++ {
 		m.CursorDown()
 	}
+	m.View(80, 20)
 
 	// Switch section
 	m.NextSection()
@@ -151,22 +138,52 @@ func TestPlanView_MultiLineScrolling(t *testing.T) {
 	}
 }
 
-func TestPlanView_MoveDownKeepsCursorVisible(t *testing.T) {
+func TestPlanView_MoveDownThroughView(t *testing.T) {
 	plan := makePlanWithScratch(10)
 	m := NewPlanViewModel(plan, nil)
 	m.SetSection(sectionHibana)
-	m.viewHeight = 3
 
 	// Move cursor to item 5
 	for i := 0; i < 5; i++ {
 		m.CursorDown()
 	}
+	m.View(80, 12) // establish scroll state
 
 	// MoveDown swaps item with the one below, cursor follows
 	m.MoveDown()
+	output := m.View(80, 12)
 
-	if m.cursorIdx < m.scrollOffset || m.cursorIdx >= m.scrollOffset+m.viewHeight {
-		t.Errorf("cursor %d not visible after MoveDown in window [%d, %d)",
-			m.cursorIdx, m.scrollOffset, m.scrollOffset+m.viewHeight)
+	// Cursor item (now at index 6, labeled "7") must be in the rendered output
+	if !strings.Contains(output, "►") {
+		t.Errorf("cursor marker not visible after MoveDown")
+	}
+}
+
+func TestPlanView_BubbleTeaLifecycle(t *testing.T) {
+	// Simulate Bubble Tea's model lifecycle: View() is called on a value copy
+	// so state set there is discarded. viewHeight must be set via SetSize()
+	// (called from WindowSizeMsg in Update) for ensureVisible() to work.
+	plan := makePlanWithToday(20)
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionToday)
+	m.SetSize(80, 16) // simulates WindowSizeMsg in Update path
+
+	// Simulate View() on a copy (as Bubble Tea does) — discard the copy
+	copy := m
+	copy.View(80, 16)
+	// m is unaffected by copy's View
+
+	// Navigate past viewport in the Update path
+	for i := 0; i < 15; i++ {
+		m.CursorDown()
+	}
+
+	// Render via View — cursor item must be visible
+	output := m.View(80, 16)
+	if !strings.Contains(output, "►") {
+		t.Errorf("cursor not visible after navigating past viewport in Bubble Tea lifecycle")
+	}
+	if m.scrollOffset == 0 {
+		t.Errorf("expected scrollOffset > 0 in Bubble Tea lifecycle, got 0")
 	}
 }
