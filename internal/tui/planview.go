@@ -68,6 +68,11 @@ func (m *PlanViewModel) SetData(plan *model.Plan, project *model.Project) {
 	m.rebuildFlat()
 }
 
+func (m *PlanViewModel) SetSize(width, height int) {
+	m.width = width
+	m.viewHeight = height - 6
+}
+
 func (m *PlanViewModel) rebuildFlat() {
 	m.flatItems = nil
 	switch m.section {

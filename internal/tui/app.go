@@ -433,6 +433,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.view == viewDetail {
 			m.detail.SetSize(m.width, m.height)
 		}
+		m.planView.SetSize(m.width, m.height)
 		return m, nil
 
 	case fetchDoneMsg:
