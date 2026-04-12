@@ -13,9 +13,12 @@ import (
 
 // Store manages reading/writing planning files from a configurable directory.
 type Store struct {
-	dir string
+	dir    string
+	syncer Syncer
 }
 
+// NewStore creates a store rooted at dir. If dir is inside a git work tree,
+// a GitSyncer is attached automatically. Use SetSyncer to override.
 func NewStore(dir string) (*Store, error) {
 	// Expand ~ to home dir
 	if strings.HasPrefix(dir, "~") {
@@ -28,8 +31,15 @@ func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	return &Store{dir: dir}, nil
+	s := &Store{dir: dir}
+	if gs := NewGitSyncer(dir); gs != nil {
+		s.syncer = gs
+	}
+	return s, nil
 }
+
+// SetSyncer overrides the auto-detected syncer (pass nil to disable sync).
+func (s *Store) SetSyncer(syncer Syncer) { s.syncer = syncer }
 
 func (s *Store) Dir() string { return s.dir }
 
@@ -40,6 +50,8 @@ func (s *Store) annotationsPath() string { return filepath.Join(s.dir, "annotati
 func (s *Store) hibanaPath() string { return filepath.Join(s.dir, "hibana.md") }
 
 func (s *Store) LoadPlan() (*model.Plan, error) {
+	s.pull()
+
 	var plan model.Plan
 	if err := s.loadYAML(s.planPath(), &plan); err != nil {
 		if os.IsNotExist(err) {
@@ -51,12 +63,18 @@ func (s *Store) LoadPlan() (*model.Plan, error) {
 }
 
 func (s *Store) SavePlan(plan *model.Plan) error {
-	return s.saveYAML(s.planPath(), plan)
+	if err := s.saveYAML(s.planPath(), plan); err != nil {
+		return err
+	}
+	s.commitAndPush(SyncMsg("update plan"), []string{"plan.yaml"})
+	return nil
 }
 
 // Annotations
 
 func (s *Store) LoadAnnotations() (*model.Annotations, error) {
+	s.pull()
+
 	var ann model.Annotations
 	if err := s.loadYAML(s.annotationsPath(), &ann); err != nil {
 		if os.IsNotExist(err) {
@@ -68,7 +86,11 @@ func (s *Store) LoadAnnotations() (*model.Annotations, error) {
 }
 
 func (s *Store) SaveAnnotations(ann *model.Annotations) error {
-	return s.saveYAML(s.annotationsPath(), ann)
+	if err := s.saveYAML(s.annotationsPath(), ann); err != nil {
+		return err
+	}
+	s.commitAndPush(SyncMsg("update annotations"), []string{"annotations.yaml"})
+	return nil
 }
 
 // GetAnnotation returns the annotation for a specific issue, or nil.
@@ -145,11 +167,30 @@ func (s *Store) SaveRecap(name string, content string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0644)
+	relPath := filepath.Join("recaps", name+".md")
+	if err := os.WriteFile(filepath.Join(s.dir, relPath), []byte(content), 0644); err != nil {
+		return err
+	}
+	s.commitAndPush(SyncMsg("save recap "+name), []string{relPath})
+	return nil
+}
+
+// sync helpers — delegate to the optional Syncer, silently ignoring errors
+// so that offline or non-VCS usage is never blocked.
+
+func (s *Store) pull() {
+	if s.syncer != nil {
+		_ = s.syncer.Pull()
+	}
+}
+
+func (s *Store) commitAndPush(msg string, paths []string) {
+	if s.syncer != nil {
+		_ = s.syncer.CommitAndPush(msg, paths)
+	}
 }
 
 // helpers
-
 
 func (s *Store) loadYAML(path string, v interface{}) error {
 	data, err := os.ReadFile(path)
