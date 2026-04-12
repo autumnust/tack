@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/autumnust/tack/internal/model"
@@ -116,6 +117,37 @@ func TestPlanView_SectionChangeResetsScroll(t *testing.T) {
 	}
 	if m.cursorIdx != 0 {
 		t.Errorf("expected cursorIdx=0 after section change, got %d", m.cursorIdx)
+	}
+}
+
+func TestPlanView_MultiLineScrolling(t *testing.T) {
+	// Hibana items with multi-line text should scroll based on rendered lines,
+	// not item count.
+	plan := &model.Plan{}
+	for i := 0; i < 10; i++ {
+		plan.Scratch = append(plan.Scratch, model.ScratchNote{
+			Text: "line one\nline two\nline three", // 3 rendered lines each
+		})
+	}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+
+	// Terminal height 16: availLines = 16 - 6 = 10 lines
+	// Each item = 3 lines, so ~3 items fit on screen
+	// Move cursor to item 5
+	for i := 0; i < 5; i++ {
+		m.CursorDown()
+	}
+
+	output := m.View(80, 16)
+
+	// The cursor item (item 5, labeled "6") must appear in the rendered output
+	if !strings.Contains(output, "6") {
+		t.Errorf("cursor item not visible in rendered output after scrolling with multi-line items")
+	}
+	// Item 1 should have scrolled off screen
+	if m.scrollOffset == 0 {
+		t.Errorf("expected scrollOffset > 0 for multi-line items, got 0")
 	}
 }
 

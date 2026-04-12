@@ -378,35 +378,71 @@ func (m *PlanViewModel) View(width, height int) string {
 		return sb.String()
 	}
 
-	endIdx := len(m.flatItems)
-	if m.viewHeight > 0 && m.scrollOffset+m.viewHeight < endIdx {
-		endIdx = m.scrollOffset + m.viewHeight
-	}
-
-	for i := m.scrollOffset; i < endIdx; i++ {
-		fi := m.flatItems[i]
+	// Pre-render all items and count their lines.
+	rendered := make([]string, len(m.flatItems))
+	lineHeights := make([]int, len(m.flatItems))
+	for i, fi := range m.flatItems {
 		cursor := "  "
 		if i == m.cursorIdx {
 			cursor = cursorStyle.Render("► ")
 		}
-
-		switch m.section {
-		case sectionWeekFocus:
-			if fi.subIdx == -1 {
-				sb.WriteString(m.renderFocusItem(cursor, fi.focusIdx))
-			} else {
-				sb.WriteString(m.renderSubItem(cursor, fi.focusIdx, fi.subIdx))
-			}
-		case sectionToday:
-			sb.WriteString(m.renderTodoItem(cursor, fi.focusIdx))
-		case sectionHibana:
-			sb.WriteString(m.renderHibanaItem(cursor, fi.focusIdx))
-		case sectionMonthlyTarget:
-			sb.WriteString(m.renderMonthlyTargetItem(cursor, fi.focusIdx))
+		rendered[i] = m.renderFlatItem(cursor, fi)
+		lineHeights[i] = strings.Count(rendered[i], "\n")
+		if lineHeights[i] == 0 {
+			lineHeights[i] = 1
 		}
 	}
 
+	// Available lines for items (total height minus tabs/status/bottom).
+	availLines := height - 6
+	if availLines < 1 {
+		availLines = 1
+	}
+
+	// Adjust scrollOffset so the cursor item is fully visible.
+	if m.cursorIdx < m.scrollOffset {
+		m.scrollOffset = m.cursorIdx
+	}
+	// Scroll forward until cursor item fits within available lines.
+	for m.scrollOffset < m.cursorIdx {
+		lines := 0
+		for i := m.scrollOffset; i <= m.cursorIdx; i++ {
+			lines += lineHeights[i]
+		}
+		if lines <= availLines {
+			break
+		}
+		m.scrollOffset++
+	}
+
+	// Render items from scrollOffset until we run out of lines.
+	usedLines := 0
+	for i := m.scrollOffset; i < len(m.flatItems); i++ {
+		if usedLines+lineHeights[i] > availLines {
+			break
+		}
+		sb.WriteString(rendered[i])
+		usedLines += lineHeights[i]
+	}
+
 	return sb.String()
+}
+
+func (m PlanViewModel) renderFlatItem(cursor string, fi flatItem) string {
+	switch m.section {
+	case sectionWeekFocus:
+		if fi.subIdx == -1 {
+			return m.renderFocusItem(cursor, fi.focusIdx)
+		}
+		return m.renderSubItem(cursor, fi.focusIdx, fi.subIdx)
+	case sectionToday:
+		return m.renderTodoItem(cursor, fi.focusIdx)
+	case sectionHibana:
+		return m.renderHibanaItem(cursor, fi.focusIdx)
+	case sectionMonthlyTarget:
+		return m.renderMonthlyTargetItem(cursor, fi.focusIdx)
+	}
+	return ""
 }
 
 // wrapText wraps long text to fit within maxWidth, indenting continuation lines.
