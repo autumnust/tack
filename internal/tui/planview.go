@@ -97,6 +97,7 @@ func (m *PlanViewModel) rebuildFlat() {
 	if m.cursorIdx < 0 {
 		m.cursorIdx = 0
 	}
+	m.ensureVisible()
 }
 
 func (m *PlanViewModel) SetSection(s planSection) {
@@ -127,12 +128,23 @@ func (m *PlanViewModel) PrevSection() {
 func (m *PlanViewModel) CursorDown() {
 	if m.cursorIdx < len(m.flatItems)-1 {
 		m.cursorIdx++
+		m.ensureVisible()
 	}
 }
 
 func (m *PlanViewModel) CursorUp() {
 	if m.cursorIdx > 0 {
 		m.cursorIdx--
+		m.ensureVisible()
+	}
+}
+
+func (m *PlanViewModel) ensureVisible() {
+	if m.cursorIdx < m.scrollOffset {
+		m.scrollOffset = m.cursorIdx
+	}
+	if m.viewHeight > 0 && m.cursorIdx >= m.scrollOffset+m.viewHeight {
+		m.scrollOffset = m.cursorIdx - m.viewHeight + 1
 	}
 }
 
@@ -320,7 +332,7 @@ func (m *PlanViewModel) resolveIssue(num int) *model.ProjectItem {
 	return nil
 }
 
-func (m PlanViewModel) View(width, height int) string {
+func (m *PlanViewModel) View(width, height int) string {
 	m.viewHeight = height - 6
 	m.width = width
 
@@ -361,7 +373,13 @@ func (m PlanViewModel) View(width, height int) string {
 		return sb.String()
 	}
 
-	for i, fi := range m.flatItems {
+	endIdx := len(m.flatItems)
+	if m.viewHeight > 0 && m.scrollOffset+m.viewHeight < endIdx {
+		endIdx = m.scrollOffset + m.viewHeight
+	}
+
+	for i := m.scrollOffset; i < endIdx; i++ {
+		fi := m.flatItems[i]
 		cursor := "  "
 		if i == m.cursorIdx {
 			cursor = cursorStyle.Render("► ")
