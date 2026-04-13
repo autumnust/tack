@@ -492,20 +492,30 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.section {
 		case sectionWeekFocus:
-			if msg.subIdx >= 0 && msg.idx < len(m.plan.WeekFocus) {
+			if msg.idx < 0 {
+				m.plan.WeekFocus = append(m.plan.WeekFocus, model.FocusItem{Text: text})
+				m.statusMsg = "Added goal"
+			} else if msg.subIdx >= 0 && msg.idx < len(m.plan.WeekFocus) {
 				subs := m.plan.WeekFocus[msg.idx].SubItems
 				if msg.subIdx < len(subs) {
 					m.plan.WeekFocus[msg.idx].SubItems[msg.subIdx].Text = text
 				}
+				m.statusMsg = "Updated"
 			} else if msg.idx < len(m.plan.WeekFocus) {
 				m.plan.WeekFocus[msg.idx].Text = text
+				m.statusMsg = "Updated"
 			}
-			m.statusMsg = "Updated"
 		case sectionToday:
-			if msg.idx < len(m.plan.Today) {
+			if msg.idx < 0 {
+				m.plan.Today = append(m.plan.Today, model.TodoItem{
+					Text:      text,
+					CreatedAt: time.Now(),
+				})
+				m.statusMsg = "Task added"
+			} else if msg.idx < len(m.plan.Today) {
 				m.plan.Today[msg.idx].Text = text
+				m.statusMsg = "Updated"
 			}
-			m.statusMsg = "Updated"
 		case sectionHibana:
 			if msg.idx < 0 {
 				m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
@@ -518,7 +528,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Note updated"
 			}
 		case sectionMonthlyTarget:
-			if msg.idx < len(m.plan.MonthlyTargets) {
+			if msg.idx < 0 {
+				m.plan.MonthlyTargets = append(m.plan.MonthlyTargets, model.MonthlyTarget{
+					Text:      text,
+					CreatedAt: time.Now(),
+				})
+				m.statusMsg = "Target added"
+			} else if msg.idx < len(m.plan.MonthlyTargets) {
 				m.plan.MonthlyTargets[msg.idx].Text = text
 				m.statusMsg = "Updated"
 			}
@@ -558,7 +574,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Refreshing..."
 			return m, m.fetchData()
 		case "o":
-			return m.openInBrowser()
+			if m.view != viewPlan {
+				return m.openInBrowser()
+			}
 		}
 
 		switch m.view {
@@ -1251,6 +1269,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("Tab / h / l") + "Switch section (Week/Today/Hibana/Target)",
 		"  " + key("j / k") + "Navigate items",
 		"  " + key("J / K") + "Reorder items (move up/down)",
+		"  " + key("o") + "New item (opens editor)",
 		"  " + key("Enter") + "Toggle done (focus / today / breakdown / target items)",
 		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
@@ -1334,6 +1353,8 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "e":
 		return m.openPlanEditor()
+	case "o":
+		return m.insertPlanItem()
 	}
 	return m, nil
 }
@@ -1666,6 +1687,23 @@ func (m AppModel) openPlanEditor() (tea.Model, tea.Cmd) {
 	}
 
 	return m.launchEditor(text, section, idx, subIdx)
+}
+
+func (m AppModel) insertPlanItem() (tea.Model, tea.Cmd) {
+	section := m.planView.section
+	switch section {
+	case sectionWeekFocus:
+		if m.weekFocusFull() {
+			m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d active). Use :del to remove one first.", m.weekFocusActiveCount(), m.maxWeekFocus())
+			return m, nil
+		}
+	case sectionToday, sectionHibana, sectionMonthlyTarget:
+		// no constraints
+	default:
+		m.statusMsg = "Cannot add item here"
+		return m, nil
+	}
+	return m.launchEditor("", section, -1, -1)
 }
 
 func (m AppModel) openEditorForNewHibana() (tea.Model, tea.Cmd) {
@@ -2032,7 +2070,7 @@ func (m AppModel) View() string {
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
 	case viewPlan:
-		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  e=edit  :board=back  :goal/:today/:hibana  :=cmd")
+		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  o=new  e=edit  :board=back  :goal/:today/:hibana  :=cmd")
 	default:
 		pending := ""
 		if m.ops.Len() > 0 {
