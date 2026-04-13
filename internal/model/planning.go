@@ -17,6 +17,8 @@ type FocusItem struct {
 	IssueNum  int       `yaml:"issue_num,omitempty"`
 	IssueRepo string    `yaml:"issue_repo,omitempty"`
 	Pinned    bool      `yaml:"pinned,omitempty"`
+	Done      bool      `yaml:"done,omitempty"`
+	DoneAt    time.Time `yaml:"done_at,omitempty"`
 	SubItems  []SubItem `yaml:"sub_items,omitempty"` // breakdown items
 }
 

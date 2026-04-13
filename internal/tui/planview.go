@@ -278,6 +278,22 @@ func (m *PlanViewModel) ToggleDone() (string, bool) {
 			}
 			return fmt.Sprintf("Uncompleted: %s", sub.Text), true
 		}
+		item := &m.plan.WeekFocus[fi.focusIdx]
+		item.Done = !item.Done
+		if item.Done {
+			item.DoneAt = time.Now()
+		} else {
+			item.DoneAt = time.Time{}
+		}
+		m.rebuildFlat()
+		label := item.Text
+		if item.IssueNum > 0 {
+			label = fmt.Sprintf("#%d %s", item.IssueNum, item.Text)
+		}
+		if item.Done {
+			return fmt.Sprintf("Finished: %s", label), true
+		}
+		return fmt.Sprintf("Reopened: %s", label), true
 	case sectionToday:
 		item := &m.plan.Today[fi.focusIdx]
 		item.Done = !item.Done
@@ -492,6 +508,13 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
 		Render(fmt.Sprintf("%d", idx+1))
 
+	check := "[ ]"
+	textStyle := issueTitleStyle
+	if item.Done {
+		check = "[x]"
+		textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
+	}
+
 	if item.IssueNum > 0 {
 		num := issueNumStyle.Render(fmt.Sprintf("#%d", item.IssueNum))
 		status := ""
@@ -510,9 +533,10 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 			}
 			subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 		}
-		maxTitle := m.width - 6 - lipgloss.Width(num) - 1 - lipgloss.Width(status) - lipgloss.Width(subCount)
+		// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
+		maxTitle := m.width - 10 - lipgloss.Width(num) - 1 - lipgloss.Width(status) - lipgloss.Width(subCount)
 		title = truncate(title, maxTitle)
-		return fmt.Sprintf("%s%s %s %s%s%s\n", cursor, lineNo, num, issueTitleStyle.Render(title), status, subCount)
+		return fmt.Sprintf("%s%s %s %s %s%s%s\n", cursor, lineNo, check, num, textStyle.Render(title), status, subCount)
 	}
 
 	subCount := ""
@@ -525,10 +549,10 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 		}
 		subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 	}
-	// prefix: cursor(2) + lineNo(3) + space(1) = 6
-	maxText := m.width - 6 - lipgloss.Width(subCount)
+	// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
+	maxText := m.width - 10 - lipgloss.Width(subCount)
 	text := truncate(item.Text, maxText)
-	return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, text, subCount)
+	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), subCount)
 }
 
 func (m PlanViewModel) renderSubItem(cursor string, focusIdx, subIdx int) string {

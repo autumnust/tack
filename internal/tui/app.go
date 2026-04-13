@@ -1249,7 +1249,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("Tab / h / l") + "Switch section (Week/Today/Hibana/Target)",
 		"  " + key("j / k") + "Navigate items",
 		"  " + key("J / K") + "Reorder items (move up/down)",
-		"  " + key("Enter") + "Toggle done (today items / breakdown items)",
+		"  " + key("Enter") + "Toggle done (focus / today / breakdown / target items)",
 		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
 		"  " + key(":promote") + "Promote breakdown item to today",
@@ -1479,6 +1479,11 @@ func (m AppModel) cmdGoal(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.statusMsg = "Usage: :goal \"description\" or :goal #N"
 		return m, nil
+	}
+
+	// When on Monthly Target section, redirect to :target
+	if m.view == viewPlan && m.planView.section == sectionMonthlyTarget {
+		return m.cmdTarget(args)
 	}
 
 	if strings.HasPrefix(args[0], "#") {
