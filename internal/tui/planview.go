@@ -131,17 +131,28 @@ func (m *PlanViewModel) PrevSection() {
 }
 
 func (m *PlanViewModel) CursorDown() {
+	if len(m.flatItems) == 0 {
+		return
+	}
 	if m.cursorIdx < len(m.flatItems)-1 {
 		m.cursorIdx++
-		m.ensureVisible()
+	} else {
+		m.cursorIdx = 0
+		m.scrollOffset = 0
 	}
+	m.ensureVisible()
 }
 
 func (m *PlanViewModel) CursorUp() {
+	if len(m.flatItems) == 0 {
+		return
+	}
 	if m.cursorIdx > 0 {
 		m.cursorIdx--
-		m.ensureVisible()
+	} else {
+		m.cursorIdx = len(m.flatItems) - 1
 	}
+	m.ensureVisible()
 }
 
 func (m *PlanViewModel) ensureVisible() {

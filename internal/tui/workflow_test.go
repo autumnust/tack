@@ -1653,6 +1653,37 @@ func TestTabCyclesToMonthlyTarget(t *testing.T) {
 	}
 }
 
+// Test: Vertical cursor wraps around (bottom→top, top→bottom)
+func TestPlanCursorWrap(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "note 0"}, {Text: "note 1"}, {Text: "note 2"},
+	}
+	app.planView.SetSection(sectionHibana)
+	app.planView.SetData(app.plan, app.project)
+	app.view = viewPlan
+
+	// Move to last item
+	app = sendKeys(t, app, "j", "j")
+	if app.planView.cursorIdx != 2 {
+		t.Fatalf("expected cursor at 2, got %d", app.planView.cursorIdx)
+	}
+
+	// One more j wraps to top
+	app = sendKeys(t, app, "j")
+	if app.planView.cursorIdx != 0 {
+		t.Errorf("expected cursor to wrap to 0, got %d", app.planView.cursorIdx)
+	}
+
+	// k from top wraps to bottom
+	app = sendKeys(t, app, "k")
+	if app.planView.cursorIdx != 2 {
+		t.Errorf("expected cursor to wrap to 2, got %d", app.planView.cursorIdx)
+	}
+}
+
 // Test: Edit monthly target via editorFinishedMsg
 func TestTargetEdit(t *testing.T) {
 	app := newTestApp()
