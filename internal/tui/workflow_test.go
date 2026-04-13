@@ -1166,6 +1166,86 @@ func TestEditPinnedIssueRejected(t *testing.T) {
 	assertStatus(t, app, "Cannot edit")
 }
 
+// Test 58: editor preserves cursor position across all tabs
+func TestEditorPreservesCursor(t *testing.T) {
+	sections := []struct {
+		name    string
+		section planSection
+		setup   func(app AppModel) AppModel
+	}{
+		{
+			"hibana",
+			sectionHibana,
+			func(app AppModel) AppModel {
+				app.plan.Scratch = []model.ScratchNote{
+					{Text: "note 0"}, {Text: "note 1"}, {Text: "note 2"},
+				}
+				return app
+			},
+		},
+		{
+			"today",
+			sectionToday,
+			func(app AppModel) AppModel {
+				app.plan.Today = []model.TodoItem{
+					{Text: "task 0"}, {Text: "task 1"}, {Text: "task 2"},
+				}
+				return app
+			},
+		},
+		{
+			"week_focus",
+			sectionWeekFocus,
+			func(app AppModel) AppModel {
+				app.plan.WeekFocus = []model.FocusItem{
+					{Text: "goal 0"}, {Text: "goal 1"}, {Text: "goal 2"},
+				}
+				return app
+			},
+		},
+		{
+			"monthly_target",
+			sectionMonthlyTarget,
+			func(app AppModel) AppModel {
+				app.plan.MonthlyTargets = []model.MonthlyTarget{
+					{Text: "target 0"}, {Text: "target 1"}, {Text: "target 2"},
+				}
+				return app
+			},
+		},
+	}
+
+	for _, tc := range sections {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestApp()
+			app.width = 80
+			app.height = 40
+			app = tc.setup(app)
+			app.planView.SetSection(tc.section)
+			app.planView.SetData(app.plan, app.project)
+			app.view = viewPlan
+
+			// Move cursor to item at index 2
+			app = sendKeys(t, app, "j", "j")
+			if app.planView.cursorIdx != 2 {
+				t.Fatalf("expected cursor at 2 before edit, got %d", app.planView.cursorIdx)
+			}
+
+			// Simulate editor round-trip on that item
+			tmpFile := t.TempDir() + "/edit.md"
+			os.WriteFile(tmpFile, []byte("edited text"), 0644)
+			m, _ := app.Update(editorFinishedMsg{
+				tmpPath: tmpFile, section: tc.section, idx: 2, subIdx: -1, err: nil,
+			})
+			app = m.(AppModel)
+
+			if app.planView.cursorIdx != 2 {
+				t.Errorf("cursor jumped to %d after edit, expected 2", app.planView.cursorIdx)
+			}
+		})
+	}
+}
+
 // --- Review screen tests ---
 
 // Test 58: review navigation

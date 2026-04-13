@@ -524,7 +524,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.planView.SetData(m.plan, m.project)
-		m.planView.SetSection(msg.section)
+		if m.planView.section != msg.section {
+			m.planView.SetSection(msg.section)
+		}
 		m.view = viewPlan
 		return m, nil
 
