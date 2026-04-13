@@ -461,41 +461,58 @@ func (m PlanViewModel) renderFlatItem(cursor string, fi flatItem) string {
 	return ""
 }
 
-// wrapText wraps long text to fit within maxWidth, indenting continuation lines.
-func wrapText(text string, indent int, maxWidth int) string {
-	if maxWidth <= indent+10 {
-		return text // too narrow to wrap meaningfully
+// splitWrap splits text into word-wrapped lines. firstWidth is the max for the
+// first line (to leave room for a suffix), restWidth for subsequent lines.
+func splitWrap(text string, firstWidth, restWidth int) []string {
+	if firstWidth <= 0 {
+		firstWidth = 1
 	}
-	contentWidth := maxWidth - indent
-	if len(text) <= contentWidth {
-		return text
+	if restWidth <= 0 {
+		restWidth = 1
+	}
+	if len(text) <= firstWidth {
+		return []string{text}
 	}
 
 	var lines []string
 	remaining := text
+	width := firstWidth
 	for len(remaining) > 0 {
-		if len(remaining) <= contentWidth {
+		if len(remaining) <= width {
 			lines = append(lines, remaining)
 			break
 		}
-		// Find last space within contentWidth
-		cut := contentWidth
-		for cut > contentWidth/2 {
+		cut := width
+		if cut >= len(remaining) {
+			lines = append(lines, remaining)
+			break
+		}
+		for cut > width/2 {
 			if remaining[cut] == ' ' {
 				break
 			}
 			cut--
 		}
-		if cut <= contentWidth/2 {
-			cut = contentWidth // no good break point, hard cut
+		if cut <= width/2 {
+			cut = width // no good break point, hard cut
 		}
 		lines = append(lines, remaining[:cut])
 		remaining = remaining[cut:]
 		if len(remaining) > 0 && remaining[0] == ' ' {
 			remaining = remaining[1:]
 		}
+		width = restWidth
 	}
+	return lines
+}
 
+// wrapText wraps long text to fit within maxWidth, indenting continuation lines.
+func wrapText(text string, indent int, maxWidth int) string {
+	if maxWidth <= indent+10 {
+		return text // too narrow to wrap meaningfully
+	}
+	contentWidth := maxWidth - indent
+	lines := splitWrap(text, contentWidth, contentWidth)
 	if len(lines) <= 1 {
 		return text
 	}
@@ -533,10 +550,18 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 			}
 			subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 		}
-		// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
-		maxTitle := m.width - 10 - lipgloss.Width(num) - 1 - lipgloss.Width(status) - lipgloss.Width(subCount)
-		title = truncate(title, maxTitle)
-		return fmt.Sprintf("%s%s %s %s %s%s%s\n", cursor, lineNo, check, num, textStyle.Render(title), status, subCount)
+		// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) + #N + space(1)
+		prefixWidth := 10 + lipgloss.Width(num) + 1
+		suffix := status + subCount
+		suffixWidth := lipgloss.Width(suffix)
+		contentWidth := m.width - prefixWidth
+		lines := splitWrap(title, contentWidth-suffixWidth, contentWidth)
+		pad := strings.Repeat(" ", prefixWidth)
+		result := fmt.Sprintf("%s%s %s %s %s%s\n", cursor, lineNo, check, num, textStyle.Render(lines[0]), suffix)
+		for _, l := range lines[1:] {
+			result += pad + textStyle.Render(l) + "\n"
+		}
+		return result
 	}
 
 	subCount := ""
@@ -550,14 +575,21 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 		subCount = helpStyle.Render(fmt.Sprintf("  [%d/%d]", done, len(item.SubItems)))
 	}
 	// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
-	maxText := m.width - 10 - lipgloss.Width(subCount)
-	text := truncate(item.Text, maxText)
-	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), subCount)
+	prefixWidth := 10
+	suffixWidth := lipgloss.Width(subCount)
+	contentWidth := m.width - prefixWidth
+	lines := splitWrap(item.Text, contentWidth-suffixWidth, contentWidth)
+	pad := strings.Repeat(" ", prefixWidth)
+	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(lines[0]), subCount)
+	for _, l := range lines[1:] {
+		result += pad + textStyle.Render(l) + "\n"
+	}
+	return result
 }
 
 func (m PlanViewModel) renderSubItem(cursor string, focusIdx, subIdx int) string {
 	sub := m.plan.WeekFocus[focusIdx].SubItems[subIdx]
-	indent := "      " // indent under parent
+	indentStr := "      " // indent under parent
 
 	check := "[ ]"
 	textStyle := issueTitleStyle
@@ -574,8 +606,15 @@ func (m PlanViewModel) renderSubItem(cursor string, focusIdx, subIdx int) string
 	}
 
 	// prefix: cursor(2) + indent(6) + check(3) + space(1) = 12
-	text = truncate(text, m.width-12)
-	return fmt.Sprintf("%s%s%s %s\n", cursor, indent, check, textStyle.Render(text))
+	prefixWidth := 12
+	contentWidth := m.width - prefixWidth
+	lines := splitWrap(text, contentWidth, contentWidth)
+	pad := strings.Repeat(" ", prefixWidth)
+	result := fmt.Sprintf("%s%s%s %s\n", cursor, indentStr, check, textStyle.Render(lines[0]))
+	for _, l := range lines[1:] {
+		result += pad + textStyle.Render(l) + "\n"
+	}
+	return result
 }
 
 func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
@@ -612,9 +651,16 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 	}
 
 	// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
-	maxText := m.width - 10 - lipgloss.Width(overdueTag)
-	text = truncate(text, maxText)
-	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), overdueTag)
+	prefixWidth := 10
+	suffixWidth := lipgloss.Width(overdueTag)
+	contentWidth := m.width - prefixWidth
+	lines := splitWrap(text, contentWidth-suffixWidth, contentWidth)
+	pad := strings.Repeat(" ", prefixWidth)
+	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(lines[0]), overdueTag)
+	for _, l := range lines[1:] {
+		result += pad + textStyle.Render(l) + "\n"
+	}
+	return result
 }
 
 func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
@@ -627,31 +673,32 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(note.CreatedAt)))
 	}
 
-	pad := "      " // 6 chars: align under text (2 cursor + 3 lineNo + 1 space)
-	contentWidth := m.width - 6
+	// prefix: cursor(2) + lineNo(3) + space(1) = 6
+	prefixWidth := 6
+	pad := strings.Repeat(" ", prefixWidth)
+	contentWidth := m.width - prefixWidth
 	contStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
 	// Split on newlines to preserve multiline formatting
-	lines := strings.Split(note.Text, "\n")
+	noteLines := strings.Split(note.Text, "\n")
 
-	// First line: truncate/wrap to fit with age suffix
-	firstMax := contentWidth - lipgloss.Width(age)
-	first := truncate(lines[0], firstMax)
-	result := fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, first, age)
+	// First line: wrap (not truncate) to fit with age suffix
+	suffixWidth := lipgloss.Width(age)
+	firstWrapped := splitWrap(noteLines[0], contentWidth-suffixWidth, contentWidth)
+	result := fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, firstWrapped[0], age)
+	for _, l := range firstWrapped[1:] {
+		result += pad + contStyle.Render(l) + "\n"
+	}
 
 	// Continuation lines: wrap each to terminal width
-	for _, line := range lines[1:] {
+	for _, line := range noteLines[1:] {
 		if line == "" {
 			result += "\n"
 			continue
 		}
-		wrapped := wrapText(line, 6, m.width)
-		for i, wl := range strings.Split(wrapped, "\n") {
-			if i == 0 {
-				result += pad + contStyle.Render(wl) + "\n"
-			} else {
-				result += contStyle.Render(wl) + "\n"
-			}
+		wrapped := splitWrap(line, contentWidth, contentWidth)
+		for _, wl := range wrapped {
+			result += pad + contStyle.Render(wl) + "\n"
 		}
 	}
 	return result
@@ -675,7 +722,14 @@ func (m PlanViewModel) renderMonthlyTargetItem(cursor string, idx int) string {
 	}
 
 	// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
-	maxText := m.width - 10 - lipgloss.Width(age)
-	text := truncate(item.Text, maxText)
-	return fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(text), age)
+	prefixWidth := 10
+	suffixWidth := lipgloss.Width(age)
+	contentWidth := m.width - prefixWidth
+	lines := splitWrap(item.Text, contentWidth-suffixWidth, contentWidth)
+	pad := strings.Repeat(" ", prefixWidth)
+	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(lines[0]), age)
+	for _, l := range lines[1:] {
+		result += pad + textStyle.Render(l) + "\n"
+	}
+	return result
 }
