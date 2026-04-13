@@ -1684,6 +1684,44 @@ func TestPlanCursorWrap(t *testing.T) {
 	}
 }
 
+// Test: Done focus items are purged on :board switch
+func TestDoneFocusPurgedOnBoardSwitch(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Goal 1"`)
+	app = sendCommand(t, app, `goal "Goal 2"`)
+	app = sendCommand(t, app, `goal "Goal 3"`)
+	app.plan.WeekFocus[0].Done = true
+	app.plan.WeekFocus[2].Done = true
+
+	app = sendCommand(t, app, "board")
+	assertView(t, app, viewBoard)
+	if len(app.plan.WeekFocus) != 1 {
+		t.Errorf("expected 1 focus item after purge, got %d", len(app.plan.WeekFocus))
+	}
+	if app.plan.WeekFocus[0].Text != "Goal 2" {
+		t.Errorf("expected 'Goal 2' to survive, got %q", app.plan.WeekFocus[0].Text)
+	}
+}
+
+// Test: Done focus items are purged on quit
+func TestDoneFocusPurgedOnQuit(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Goal A"`)
+	app = sendCommand(t, app, `goal "Goal B"`)
+	app.plan.WeekFocus[0].Done = true
+
+	// q triggers initiateQuit which purges done items
+	app = sendKeys(t, app, "q")
+	if len(app.plan.WeekFocus) != 1 {
+		t.Errorf("expected 1 focus item after quit purge, got %d", len(app.plan.WeekFocus))
+	}
+	if app.plan.WeekFocus[0].Text != "Goal B" {
+		t.Errorf("expected 'Goal B' to survive, got %q", app.plan.WeekFocus[0].Text)
+	}
+}
+
 // Test: Edit monthly target via editorFinishedMsg
 func TestTargetEdit(t *testing.T) {
 	app := newTestApp()

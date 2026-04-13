@@ -694,6 +694,9 @@ func (m AppModel) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) initiateQuit() (tea.Model, tea.Cmd) {
+	// Purge completed focus items before saving
+	m.purgeDoneFocusItems()
+
 	// Always save planning data on quit
 	m.savePlanningData()
 
@@ -1369,9 +1372,21 @@ func (m AppModel) cmdSwitchToPlan() (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) cmdSwitchToBoard() (tea.Model, tea.Cmd) {
+	m.purgeDoneFocusItems()
 	m.view = viewBoard
 	m.statusMsg = "Standup mode"
 	return m, nil
+}
+
+// purgeDoneFocusItems removes completed weekly focus items.
+func (m *AppModel) purgeDoneFocusItems() {
+	active := m.plan.WeekFocus[:0]
+	for _, f := range m.plan.WeekFocus {
+		if !f.Done {
+			active = append(active, f)
+		}
+	}
+	m.plan.WeekFocus = active
 }
 
 // --- Standup annotation commands ---
