@@ -933,7 +933,8 @@ func TestDoneToggle(t *testing.T) {
 	}
 	assertStatus(t, app, "Completed")
 
-	// Toggle back
+	// Show done items, then toggle back
+	app = sendKeys(t, app, "x")
 	app = sendCommand(t, app, "done")
 	if app.plan.Today[0].Done {
 		t.Error("expected item to be undone")
@@ -1564,8 +1565,8 @@ func TestTargetToggleDone(t *testing.T) {
 	}
 	assertStatus(t, app, "Completed: Ship v1.0")
 
-	// Toggle back
-	app = sendKeys(t, app, "enter")
+	// Show done items, then toggle back
+	app = sendKeys(t, app, "x", "enter")
 	if app.plan.MonthlyTargets[0].Done {
 		t.Fatal("expected target to be undone after second Enter")
 	}

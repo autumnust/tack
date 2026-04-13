@@ -1273,6 +1273,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("j / k") + "Navigate items",
 		"  " + key("J / K") + "Reorder items (move up/down)",
 		"  " + key("o") + "New item (opens editor)",
+		"  " + key("x") + "Toggle show/hide done items",
 		"  " + key("Enter") + "Toggle done (focus / today / breakdown / target items)",
 		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
@@ -1358,6 +1359,13 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openPlanEditor()
 	case "o":
 		return m.insertPlanItem()
+	case "x":
+		m.planView.ToggleShowDone()
+		if m.planView.ShowingDone() {
+			m.statusMsg = "Showing done items"
+		} else {
+			m.statusMsg = "Hiding done items"
+		}
 	}
 	return m, nil
 }
@@ -2085,7 +2093,7 @@ func (m AppModel) View() string {
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
 	case viewPlan:
-		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  o=new  e=edit  :board=back  :goal/:today/:hibana  :=cmd")
+		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  o=new  e=edit  x=toggle done  :board=back  :=cmd")
 	default:
 		pending := ""
 		if m.ops.Len() > 0 {

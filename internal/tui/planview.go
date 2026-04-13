@@ -50,6 +50,7 @@ type PlanViewModel struct {
 	scrollOffset int
 	viewHeight   int
 	width        int
+	showDone     bool
 
 }
 
@@ -73,11 +74,23 @@ func (m *PlanViewModel) SetSize(width, height int) {
 	m.viewHeight = height - 6
 }
 
+func (m *PlanViewModel) ToggleShowDone() {
+	m.showDone = !m.showDone
+	m.rebuildFlat()
+}
+
+func (m *PlanViewModel) ShowingDone() bool {
+	return m.showDone
+}
+
 func (m *PlanViewModel) rebuildFlat() {
 	m.flatItems = nil
 	switch m.section {
 	case sectionWeekFocus:
 		for i, f := range m.plan.WeekFocus {
+			if !m.showDone && f.Done {
+				continue
+			}
 			m.flatItems = append(m.flatItems, flatItem{section: sectionWeekFocus, focusIdx: i, subIdx: -1})
 			for si := range f.SubItems {
 				m.flatItems = append(m.flatItems, flatItem{section: sectionWeekFocus, focusIdx: i, subIdx: si})
@@ -85,6 +98,9 @@ func (m *PlanViewModel) rebuildFlat() {
 		}
 	case sectionToday:
 		for i := range m.plan.Today {
+			if !m.showDone && m.plan.Today[i].Done {
+				continue
+			}
 			m.flatItems = append(m.flatItems, flatItem{section: sectionToday, focusIdx: i, subIdx: -1})
 		}
 	case sectionHibana:
@@ -93,6 +109,9 @@ func (m *PlanViewModel) rebuildFlat() {
 		}
 	case sectionMonthlyTarget:
 		for i := range m.plan.MonthlyTargets {
+			if !m.showDone && m.plan.MonthlyTargets[i].Done {
+				continue
+			}
 			m.flatItems = append(m.flatItems, flatItem{section: sectionMonthlyTarget, focusIdx: i, subIdx: -1})
 		}
 	}
