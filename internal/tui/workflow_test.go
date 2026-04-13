@@ -339,6 +339,63 @@ func TestGoalMaxCap(t *testing.T) {
 	assertStatus(t, app, "full")
 }
 
+// Test 10b: Max cap does not count finished focus items (:goal)
+func TestGoalMaxCapIgnoresDone(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+
+	app = sendCommand(t, app, "goal \"Goal 1\"")
+	app = sendCommand(t, app, "goal \"Goal 2\"")
+	app = sendCommand(t, app, "goal \"Goal 3\"")
+	if len(app.plan.WeekFocus) != 3 {
+		t.Fatalf("expected 3 goals, got %d", len(app.plan.WeekFocus))
+	}
+
+	// Mark two as done
+	app.plan.WeekFocus[0].Done = true
+	app.plan.WeekFocus[1].Done = true
+
+	// Should be able to add two more (only 1 active)
+	app = sendCommand(t, app, "goal \"Goal 4\"")
+	if len(app.plan.WeekFocus) != 4 {
+		t.Errorf("expected 4 goals (2 done + 2 active), got %d", len(app.plan.WeekFocus))
+	}
+
+	app = sendCommand(t, app, "goal \"Goal 5\"")
+	if len(app.plan.WeekFocus) != 5 {
+		t.Errorf("expected 5 goals (2 done + 3 active), got %d", len(app.plan.WeekFocus))
+	}
+
+	// Now at cap again (3 active) — should be rejected
+	app = sendCommand(t, app, "goal \"Goal 6\"")
+	if len(app.plan.WeekFocus) != 5 {
+		t.Errorf("expected 5 goals (cap on active), got %d", len(app.plan.WeekFocus))
+	}
+	assertStatus(t, app, "full")
+}
+
+// Test 10c: Max cap does not count finished focus items (:pin)
+func TestPinMaxCapIgnoresDone(t *testing.T) {
+	app := newTestApp()
+
+	app = sendCommand(t, app, "pin #101")
+	app = sendCommand(t, app, "pin #102")
+	app = sendCommand(t, app, "pin #200")
+	if len(app.plan.WeekFocus) != 3 {
+		t.Fatalf("expected 3 pinned items, got %d", len(app.plan.WeekFocus))
+	}
+
+	// Mark two as done
+	app.plan.WeekFocus[0].Done = true
+	app.plan.WeekFocus[1].Done = true
+
+	// Should be able to pin more (only 1 active)
+	app = sendCommand(t, app, "pin #201")
+	if len(app.plan.WeekFocus) != 4 {
+		t.Errorf("expected 4 items (2 done + 2 active), got %d", len(app.plan.WeekFocus))
+	}
+}
+
 // Test 11: Planning — :today adds with CreatedAt set
 func TestTodayCreatedAt(t *testing.T) {
 	app := newTestApp()

@@ -1447,7 +1447,7 @@ func (m AppModel) cmdPin(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.weekFocusFull() {
-		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d). Use :del to remove one first.", len(m.plan.WeekFocus), m.maxWeekFocus())
+		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d active). Use :del to remove one first.", m.weekFocusActiveCount(), m.maxWeekFocus())
 		return m, nil
 	}
 
@@ -1471,8 +1471,18 @@ func (m AppModel) maxWeekFocus() int {
 	return 3
 }
 
+func (m AppModel) weekFocusActiveCount() int {
+	n := 0
+	for _, f := range m.plan.WeekFocus {
+		if !f.Done {
+			n++
+		}
+	}
+	return n
+}
+
 func (m AppModel) weekFocusFull() bool {
-	return len(m.plan.WeekFocus) >= m.maxWeekFocus()
+	return m.weekFocusActiveCount() >= m.maxWeekFocus()
 }
 
 func (m AppModel) cmdGoal(args []string) (tea.Model, tea.Cmd) {
@@ -1491,7 +1501,7 @@ func (m AppModel) cmdGoal(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.weekFocusFull() {
-		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d). Use :del to remove one first.", len(m.plan.WeekFocus), m.maxWeekFocus())
+		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d active). Use :del to remove one first.", m.weekFocusActiveCount(), m.maxWeekFocus())
 		return m, nil
 	}
 
