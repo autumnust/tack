@@ -1361,6 +1361,37 @@ func (m AppModel) selectedTarget() *model.ProjectItem {
 // --- Planning mode key handler ---
 
 func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle search input mode
+	if m.planView.IsSearching() {
+		switch msg.Type {
+		case tea.KeyEscape:
+			m.planView.ClearSearch()
+			m.statusMsg = ""
+		case tea.KeyEnter:
+			m.planView.ConfirmSearch()
+			n := len(m.planView.flatItems)
+			// Don't count header items in the match count
+			for _, fi := range m.planView.flatItems {
+				if fi.header {
+					n--
+				}
+			}
+			m.statusMsg = fmt.Sprintf("Search: %s (%d matches)", m.planView.SearchQuery(), n)
+		case tea.KeyBackspace:
+			q := m.planView.SearchQuery()
+			if len(q) > 0 {
+				m.planView.UpdateSearchQuery(q[:len(q)-1])
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.planView.UpdateSearchQuery(m.planView.SearchQuery() + string(msg.Runes))
+			} else if msg.Type == tea.KeySpace {
+				m.planView.UpdateSearchQuery(m.planView.SearchQuery() + " ")
+			}
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "tab", "l":
 		m.planView.NextSection()
@@ -1401,6 +1432,16 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.statusMsg = "Hiding done items"
 			}
+		}
+	case "/":
+		if m.planView.section == sectionHibana {
+			m.planView.StartSearch()
+			m.statusMsg = ""
+		}
+	case "esc":
+		if m.planView.HasSearchFilter() {
+			m.planView.ClearSearch()
+			m.statusMsg = ""
 		}
 	}
 	return m, nil
@@ -2284,7 +2325,11 @@ func (m AppModel) View() string {
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
 	case viewPlan:
-		viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  o=new  e=edit  x=toggle done  :board=back  :=cmd")
+		if m.planView.section == sectionHibana {
+			viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  o=new  e=edit  x=expand  /=search  :=cmd")
+		} else {
+			viewHint = helpStyle.Render("[plan] Tab=section  j/k=nav  o=new  e=edit  x=toggle done  :=cmd")
+		}
 	default:
 		pending := ""
 		if m.ops.Len() > 0 {
@@ -2299,6 +2344,9 @@ func (m AppModel) View() string {
 	var bottom string
 	if m.command.IsActive() {
 		bottom = m.command.View()
+	} else if m.view == viewPlan && m.planView.IsSearching() {
+		searchPrompt := "/" + m.planView.SearchQuery() + "█"
+		bottom = commandBarStyle.Render(searchPrompt)
 	} else {
 		bottom = statusBar
 	}

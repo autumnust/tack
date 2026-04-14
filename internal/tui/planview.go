@@ -54,6 +54,9 @@ type PlanViewModel struct {
 	showDone        bool
 	hibanaExpanded  bool
 
+	// Search (Hibana tab only)
+	searching   bool   // true while user is typing in search bar
+	searchQuery string // current search filter text
 }
 
 func NewPlanViewModel(plan *model.Plan, project *model.Project) PlanViewModel {
@@ -93,6 +96,43 @@ func (m *PlanViewModel) HibanaExpanded() bool {
 	return m.hibanaExpanded
 }
 
+func (m *PlanViewModel) StartSearch() {
+	m.searching = true
+	m.searchQuery = ""
+	m.rebuildFlat()
+}
+
+func (m *PlanViewModel) IsSearching() bool {
+	return m.searching
+}
+
+func (m *PlanViewModel) SearchQuery() string {
+	return m.searchQuery
+}
+
+func (m *PlanViewModel) HasSearchFilter() bool {
+	return m.searchQuery != ""
+}
+
+func (m *PlanViewModel) ConfirmSearch() {
+	m.searching = false
+}
+
+func (m *PlanViewModel) ClearSearch() {
+	m.searching = false
+	m.searchQuery = ""
+	m.cursorIdx = 0
+	m.scrollOffset = 0
+	m.rebuildFlat()
+}
+
+func (m *PlanViewModel) UpdateSearchQuery(q string) {
+	m.searchQuery = q
+	m.cursorIdx = 0
+	m.scrollOffset = 0
+	m.rebuildFlat()
+}
+
 func (m *PlanViewModel) rebuildFlat() {
 	m.flatItems = nil
 	switch m.section {
@@ -115,7 +155,11 @@ func (m *PlanViewModel) rebuildFlat() {
 		}
 	case sectionHibana:
 		var regular, research []int
+		query := strings.ToLower(m.searchQuery)
 		for i := range m.plan.Scratch {
+			if query != "" && !strings.Contains(strings.ToLower(m.plan.Scratch[i].Text), query) {
+				continue
+			}
 			if strings.HasPrefix(strings.ToLower(m.plan.Scratch[i].Text), "[research]") {
 				research = append(research, i)
 			} else {
@@ -156,6 +200,8 @@ func (m *PlanViewModel) SetSection(s planSection) {
 }
 
 func (m *PlanViewModel) NextSection() {
+	m.searching = false
+	m.searchQuery = ""
 	m.section = (m.section + 1) % sectionCount
 	m.cursorIdx = 0
 	m.scrollOffset = 0
@@ -163,6 +209,8 @@ func (m *PlanViewModel) NextSection() {
 }
 
 func (m *PlanViewModel) PrevSection() {
+	m.searching = false
+	m.searchQuery = ""
 	if m.section == 0 {
 		m.section = sectionCount - 1
 	} else {
