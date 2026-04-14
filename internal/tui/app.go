@@ -824,7 +824,13 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 	default:
 		// Check if it's a line number jump (:<N>)
 		if lineNum, err := strconv.Atoi(cmd.Action); err == nil {
-			if m.view == viewDetail && m.detail.HasNav() {
+			if m.view == viewPlan {
+				if m.planView.JumpToLine(lineNum) {
+					m.statusMsg = fmt.Sprintf("Jumped to line %d", lineNum)
+				} else {
+					m.statusMsg = fmt.Sprintf("Line %d not found", lineNum)
+				}
+			} else if m.view == viewDetail && m.detail.HasNav() {
 				if lineNum >= 1 && lineNum <= len(m.detail.navItems) {
 					m.detail.navCursor = lineNum - 1
 					m.detail.RefreshEpicContent(m.width)
@@ -833,7 +839,7 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 					m.statusMsg = fmt.Sprintf("Line %d out of range (1-%d)", lineNum, len(m.detail.navItems))
 				}
 			} else {
-				m.statusMsg = "Line jump only works in detail view with sub-issues"
+				m.statusMsg = "Line jump not available in this view"
 			}
 			return m, nil
 		}

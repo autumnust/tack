@@ -190,6 +190,77 @@ func TestPlanView_BubbleTeaLifecycle(t *testing.T) {
 	}
 }
 
+func TestHibanaResearchSortedToBottom(t *testing.T) {
+	plan := &model.Plan{
+		Scratch: []model.ScratchNote{
+			{Text: "regular note 1"},
+			{Text: "[research]investigate X"},
+			{Text: "regular note 2"},
+			{Text: "[Research]another study"},
+		},
+	}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+
+	// Expected order: regular 1 (idx 0), regular 2 (idx 2), header, research (idx 1), research (idx 3)
+	if len(m.flatItems) != 5 {
+		t.Fatalf("expected 5 flat items (2 regular + header + 2 research), got %d", len(m.flatItems))
+	}
+	if m.flatItems[0].focusIdx != 0 {
+		t.Errorf("expected first item to be data idx 0, got %d", m.flatItems[0].focusIdx)
+	}
+	if m.flatItems[1].focusIdx != 2 {
+		t.Errorf("expected second item to be data idx 2, got %d", m.flatItems[1].focusIdx)
+	}
+	if !m.flatItems[2].header {
+		t.Error("expected third item to be a header")
+	}
+	if m.flatItems[3].focusIdx != 1 {
+		t.Errorf("expected fourth item to be data idx 1, got %d", m.flatItems[3].focusIdx)
+	}
+	if m.flatItems[4].focusIdx != 3 {
+		t.Errorf("expected fifth item to be data idx 3, got %d", m.flatItems[4].focusIdx)
+	}
+}
+
+func TestHibanaCursorSkipsHeader(t *testing.T) {
+	plan := &model.Plan{
+		Scratch: []model.ScratchNote{
+			{Text: "regular note"},
+			{Text: "[research]study"},
+		},
+	}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+
+	// Items: regular (0), header, research (1)
+	if m.cursorIdx != 0 {
+		t.Fatalf("expected cursor at 0, got %d", m.cursorIdx)
+	}
+	m.CursorDown() // should skip header, land on research item
+	if m.flatItems[m.cursorIdx].header {
+		t.Error("cursor should not be on header")
+	}
+	if m.flatItems[m.cursorIdx].focusIdx != 1 {
+		t.Errorf("expected cursor on research item (data idx 1), got %d", m.flatItems[m.cursorIdx].focusIdx)
+	}
+}
+
+func TestPlanLineJump(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "task A"`)
+	app = sendCommand(t, app, `today "task B"`)
+	app = sendCommand(t, app, `today "task C"`)
+	app = sendKeys(t, app, "tab") // switch to Today
+
+	app = sendCommand(t, app, "2")
+	if app.planView.cursorIdx != 1 {
+		t.Errorf("expected cursor at index 1 after :2, got %d", app.planView.cursorIdx)
+	}
+	assertStatus(t, app, "Jumped to line 2")
+}
+
 func TestWeekdaysBetween(t *testing.T) {
 	// 2026-04-10 is a Friday, 2026-04-13 is Monday
 	fri := time.Date(2026, 4, 10, 9, 0, 0, 0, time.Local)

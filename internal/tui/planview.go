@@ -38,6 +38,7 @@ type flatItem struct {
 	section  planSection
 	focusIdx int // index into WeekFocus (for sub-items, the parent)
 	subIdx   int // -1 if this is a top-level item, >=0 if sub-item
+	header   bool // true for section divider lines (not selectable)
 }
 
 type PlanViewModel struct {
@@ -113,8 +114,22 @@ func (m *PlanViewModel) rebuildFlat() {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionToday, focusIdx: i, subIdx: -1})
 		}
 	case sectionHibana:
+		var regular, research []int
 		for i := range m.plan.Scratch {
+			if strings.HasPrefix(strings.ToLower(m.plan.Scratch[i].Text), "[research]") {
+				research = append(research, i)
+			} else {
+				regular = append(regular, i)
+			}
+		}
+		for _, i := range regular {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
+		}
+		if len(research) > 0 {
+			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: -1, subIdx: -1, header: true})
+			for _, i := range research {
+				m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
+			}
 		}
 	case sectionMonthlyTarget:
 		for i := range m.plan.MonthlyTargets {
@@ -162,11 +177,17 @@ func (m *PlanViewModel) CursorDown() {
 	if len(m.flatItems) == 0 {
 		return
 	}
-	if m.cursorIdx < len(m.flatItems)-1 {
-		m.cursorIdx++
-	} else {
-		m.cursorIdx = 0
-		m.scrollOffset = 0
+	start := m.cursorIdx
+	for {
+		if m.cursorIdx < len(m.flatItems)-1 {
+			m.cursorIdx++
+		} else {
+			m.cursorIdx = 0
+			m.scrollOffset = 0
+		}
+		if !m.flatItems[m.cursorIdx].header || m.cursorIdx == start {
+			break
+		}
 	}
 	m.ensureVisible()
 }
@@ -175,12 +196,33 @@ func (m *PlanViewModel) CursorUp() {
 	if len(m.flatItems) == 0 {
 		return
 	}
-	if m.cursorIdx > 0 {
-		m.cursorIdx--
-	} else {
-		m.cursorIdx = len(m.flatItems) - 1
+	start := m.cursorIdx
+	for {
+		if m.cursorIdx > 0 {
+			m.cursorIdx--
+		} else {
+			m.cursorIdx = len(m.flatItems) - 1
+		}
+		if !m.flatItems[m.cursorIdx].header || m.cursorIdx == start {
+			break
+		}
 	}
 	m.ensureVisible()
+}
+
+// JumpToLine moves the cursor to the flat item whose data index matches lineNum (1-indexed).
+func (m *PlanViewModel) JumpToLine(lineNum int) bool {
+	for i, fi := range m.flatItems {
+		if fi.header {
+			continue
+		}
+		if fi.focusIdx == lineNum-1 && fi.subIdx == -1 {
+			m.cursorIdx = i
+			m.ensureVisible()
+			return true
+		}
+	}
+	return false
 }
 
 func (m *PlanViewModel) ensureVisible() {
@@ -484,6 +526,10 @@ func (m *PlanViewModel) View(width, height int) string {
 }
 
 func (m PlanViewModel) renderFlatItem(cursor string, fi flatItem) string {
+	if fi.header {
+		label := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("── Research ──")
+		return fmt.Sprintf("  %s\n", label)
+	}
 	switch m.section {
 	case sectionWeekFocus:
 		if fi.subIdx == -1 {
