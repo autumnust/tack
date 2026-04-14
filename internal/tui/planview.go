@@ -502,6 +502,24 @@ func (m PlanViewModel) renderFlatItem(cursor string, fi flatItem) string {
 
 // splitWrap splits text into word-wrapped lines. firstWidth is the max for the
 // first line (to leave room for a suffix), restWidth for subsequent lines.
+// weekdaysBetween returns the number of weekdays (Mon-Fri) between two dates,
+// ignoring the time component. Returns 0 if from and to are the same date.
+func weekdaysBetween(from, to time.Time) int {
+	from = time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
+	to = time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, to.Location())
+	if !to.After(from) {
+		return 0
+	}
+	count := 0
+	for d := from.AddDate(0, 0, 1); !d.After(to); d = d.AddDate(0, 0, 1) {
+		wd := d.Weekday()
+		if wd != time.Saturday && wd != time.Sunday {
+			count++
+		}
+	}
+	return count
+}
+
 func splitWrap(text string, firstWidth, restWidth int) []string {
 	if firstWidth <= 0 {
 		firstWidth = 1
@@ -669,10 +687,7 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 		check = "[x]"
 		textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
 	} else if !item.CreatedAt.IsZero() {
-		now := time.Now()
-		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		itemDate := time.Date(item.CreatedAt.Year(), item.CreatedAt.Month(), item.CreatedAt.Day(), 0, 0, 0, 0, item.CreatedAt.Location())
-		days := int(today.Sub(itemDate).Hours() / 24)
+		days := weekdaysBetween(item.CreatedAt, time.Now())
 		if days == 1 {
 			textStyle = lipgloss.NewStyle().Foreground(colorWarning)
 			overdueTag = lipgloss.NewStyle().Foreground(colorWarning).Render(" (carry-over)")

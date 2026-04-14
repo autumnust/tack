@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/autumnust/tack/internal/model"
 )
@@ -186,5 +187,38 @@ func TestPlanView_BubbleTeaLifecycle(t *testing.T) {
 	}
 	if m.scrollOffset == 0 {
 		t.Errorf("expected scrollOffset > 0 in Bubble Tea lifecycle, got 0")
+	}
+}
+
+func TestWeekdaysBetween(t *testing.T) {
+	// 2026-04-10 is a Friday, 2026-04-13 is Monday
+	fri := time.Date(2026, 4, 10, 9, 0, 0, 0, time.Local)
+	mon := time.Date(2026, 4, 13, 9, 0, 0, 0, time.Local)
+	tue := time.Date(2026, 4, 14, 9, 0, 0, 0, time.Local)
+	wed := time.Date(2026, 4, 15, 9, 0, 0, 0, time.Local)
+	thu := time.Date(2026, 4, 9, 9, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name string
+		from time.Time
+		to   time.Time
+		want int
+	}{
+		{"same day", fri, fri, 0},
+		{"fri to mon (weekend skipped)", fri, mon, 1},
+		{"fri to tue", fri, tue, 2},
+		{"thu to mon", thu, mon, 2},
+		{"thu to wed (full work week)", thu, wed, 4},
+		{"mon to tue (consecutive weekdays)", mon, tue, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := weekdaysBetween(tt.from, tt.to)
+			if got != tt.want {
+				t.Errorf("weekdaysBetween(%s, %s) = %d, want %d",
+					tt.from.Format("Mon 2006-01-02"), tt.to.Format("Mon 2006-01-02"), got, tt.want)
+			}
+		})
 	}
 }
