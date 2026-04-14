@@ -1076,6 +1076,87 @@ func TestDeleteByLineNumber(t *testing.T) {
 	}
 }
 
+// --- Plan move tests ---
+
+// Test: :mv cursor item from hibana to today
+func TestPlanMoveCursorHibanaToToday(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `hibana "deploy pipeline"`)
+	app = sendCommand(t, app, `hibana "review PR"`)
+
+	// On hibana tab, cursor at item 1
+	app = sendCommand(t, app, `mv today`)
+	if len(app.plan.Scratch) != 1 {
+		t.Fatalf("expected 1 scratch note after move, got %d", len(app.plan.Scratch))
+	}
+	if len(app.plan.Today) != 1 {
+		t.Fatalf("expected 1 today item, got %d", len(app.plan.Today))
+	}
+	if app.plan.Today[0].Text != "deploy pipeline" {
+		t.Errorf("expected 'deploy pipeline' in today, got %q", app.plan.Today[0].Text)
+	}
+	assertStatus(t, app, "Moved to Today")
+}
+
+// Test: :mv by line number from hibana to goal
+func TestPlanMoveByNumberHibanaToGoal(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, `hibana "idea A"`)
+	app = sendCommand(t, app, `hibana "idea B"`)
+
+	app = sendCommand(t, app, `mv 2 goal`)
+	if len(app.plan.Scratch) != 1 {
+		t.Fatalf("expected 1 scratch note after move, got %d", len(app.plan.Scratch))
+	}
+	if len(app.plan.WeekFocus) != 1 {
+		t.Fatalf("expected 1 goal, got %d", len(app.plan.WeekFocus))
+	}
+	if app.plan.WeekFocus[0].Text != "idea B" {
+		t.Errorf("expected 'idea B' in goals, got %q", app.plan.WeekFocus[0].Text)
+	}
+}
+
+// Test: :mv to goal sub-item
+func TestPlanMoveToGoalSubItem(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Ship v1"`)
+
+	// Switch to hibana and add a note
+	app = sendKeys(t, app, "tab", "tab") // Today -> Hibana
+	app = sendCommand(t, app, `hibana "write docs"`)
+
+	app = sendCommand(t, app, `mv goal 1`)
+	if len(app.plan.Scratch) != 0 {
+		t.Fatalf("expected 0 scratch notes after move, got %d", len(app.plan.Scratch))
+	}
+	if len(app.plan.WeekFocus[0].SubItems) != 1 {
+		t.Fatalf("expected 1 sub-item, got %d", len(app.plan.WeekFocus[0].SubItems))
+	}
+	if app.plan.WeekFocus[0].SubItems[0].Text != "write docs" {
+		t.Errorf("expected 'write docs' as sub-item, got %q", app.plan.WeekFocus[0].SubItems[0].Text)
+	}
+}
+
+// Test: :mv to goal respects max cap
+func TestPlanMoveGoalMaxCap(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "G1"`)
+	app = sendCommand(t, app, `goal "G2"`)
+	app = sendCommand(t, app, `goal "G3"`)
+
+	// Switch to hibana
+	app = sendKeys(t, app, "tab", "tab")
+	app = sendCommand(t, app, `hibana "overflow"`)
+
+	app = sendCommand(t, app, `mv goal`)
+	assertStatus(t, app, "full")
+	if len(app.plan.Scratch) != 1 {
+		t.Errorf("expected scratch note to remain after blocked move, got %d", len(app.plan.Scratch))
+	}
+}
+
 // --- Plan reorder tests ---
 
 // Test 53: K moves item up in today

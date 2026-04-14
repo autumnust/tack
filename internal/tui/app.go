@@ -828,6 +828,10 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
+	if m.view == viewPlan {
+		return m.cmdPlanMove(args)
+	}
+
 	if len(args) == 0 {
 		m.statusMsg = "Usage: :mv <status> or :mv #<number> <status>"
 		return m, nil
@@ -1282,6 +1286,8 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
 		"  " + key(":target \"text\"") + "Add monthly target",
+		"  " + key(":mv <tab>") + "Move item to tab (today/goal/hibana/target)",
+		"  " + key(":mv goal N") + "Move item as sub-item of goal #N",
 		"  " + key(":del") + "Delete selected item",
 		"  " + key(":recap") + "Generate weekly recap",
 		"  " + key(":stats") + "Show command usage stats",
@@ -1967,6 +1973,161 @@ func (m AppModel) cmdRecap() (tea.Model, tea.Cmd) {
 	m.view = viewDetail
 	m.detail = NewDetailModel(helpIssue, m.width, m.height, nil)
 	m.statusMsg = fmt.Sprintf("Recap saved to recaps/%s.md", weekNum)
+	return m, nil
+}
+
+// parsePlanTarget maps a user-facing tab name to a planSection.
+func parsePlanTarget(name string) (planSection, bool) {
+	switch strings.ToLower(name) {
+	case "today":
+		return sectionToday, true
+	case "goal", "focus":
+		return sectionWeekFocus, true
+	case "hibana", "scratch":
+		return sectionHibana, true
+	case "target":
+		return sectionMonthlyTarget, true
+	}
+	return 0, false
+}
+
+// cmdPlanMove moves an item between plan tabs.
+// Syntax:
+//
+//	:mv today           — move cursor item to Today
+//	:mv goal            — move cursor item to Week Focus
+//	:mv goal 2          — move cursor item as sub-item of goal #2
+//	:mv 3 today         — move item #3 to Today
+//	:mv 3 goal 2        — move item #3 as sub-item of goal #2
+func (m AppModel) cmdPlanMove(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :mv <tab> or :mv <N> <tab> [sub-N]"
+		return m, nil
+	}
+
+	// Parse: optional source line number, required target tab, optional sub-item number
+	srcLineNum := -1 // -1 means cursor
+	targetIdx := 0
+	if n, err := strconv.Atoi(args[0]); err == nil {
+		srcLineNum = n
+		targetIdx = 1
+	}
+
+	if targetIdx >= len(args) {
+		m.statusMsg = "Usage: :mv <tab> or :mv <N> <tab> [sub-N]"
+		return m, nil
+	}
+
+	destSection, ok := parsePlanTarget(args[targetIdx])
+	if !ok {
+		m.statusMsg = fmt.Sprintf("Unknown target: %s (use today, goal, hibana, target)", args[targetIdx])
+		return m, nil
+	}
+
+	// Optional sub-item number for goal: :mv goal 2
+	destSubIdx := -1
+	if targetIdx+1 < len(args) {
+		if n, err := strconv.Atoi(args[targetIdx+1]); err == nil {
+			destSubIdx = n - 1 // 1-indexed to 0-indexed
+		}
+	}
+
+	// Can't move to same section (unless moving into a sub-item)
+	if destSection == m.planView.section && destSubIdx < 0 {
+		m.statusMsg = "Already in this tab"
+		return m, nil
+	}
+
+	// Check destination constraints before removing source
+	if destSection == sectionWeekFocus && destSubIdx < 0 && m.weekFocusFull() {
+		m.statusMsg = fmt.Sprintf("Week focus is full (%d/%d active)", m.weekFocusActiveCount(), m.maxWeekFocus())
+		return m, nil
+	}
+
+	// Resolve source item text and remove it
+	var srcText string
+	if srcLineNum > 0 {
+		idx := srcLineNum - 1
+		switch m.planView.section {
+		case sectionWeekFocus:
+			if idx < len(m.plan.WeekFocus) {
+				srcText = m.plan.WeekFocus[idx].Text
+				m.plan.WeekFocus = append(m.plan.WeekFocus[:idx], m.plan.WeekFocus[idx+1:]...)
+			}
+		case sectionToday:
+			if idx < len(m.plan.Today) {
+				srcText = m.plan.Today[idx].Text
+				m.plan.Today = append(m.plan.Today[:idx], m.plan.Today[idx+1:]...)
+			}
+		case sectionHibana:
+			if idx < len(m.plan.Scratch) {
+				srcText = m.plan.Scratch[idx].Text
+				m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
+			}
+		case sectionMonthlyTarget:
+			if idx < len(m.plan.MonthlyTargets) {
+				srcText = m.plan.MonthlyTargets[idx].Text
+				m.plan.MonthlyTargets = append(m.plan.MonthlyTargets[:idx], m.plan.MonthlyTargets[idx+1:]...)
+			}
+		}
+	} else {
+		fi := m.planView.currentFlat()
+		if fi == nil {
+			m.statusMsg = "No item selected"
+			return m, nil
+		}
+		switch m.planView.section {
+		case sectionWeekFocus:
+			if fi.subIdx >= 0 {
+				srcText = m.plan.WeekFocus[fi.focusIdx].SubItems[fi.subIdx].Text
+				subs := &m.plan.WeekFocus[fi.focusIdx].SubItems
+				*subs = append((*subs)[:fi.subIdx], (*subs)[fi.subIdx+1:]...)
+			} else {
+				srcText = m.plan.WeekFocus[fi.focusIdx].Text
+				m.plan.WeekFocus = append(m.plan.WeekFocus[:fi.focusIdx], m.plan.WeekFocus[fi.focusIdx+1:]...)
+			}
+		case sectionToday:
+			srcText = m.plan.Today[fi.focusIdx].Text
+			m.plan.Today = append(m.plan.Today[:fi.focusIdx], m.plan.Today[fi.focusIdx+1:]...)
+		case sectionHibana:
+			srcText = m.plan.Scratch[fi.focusIdx].Text
+			m.plan.Scratch = append(m.plan.Scratch[:fi.focusIdx], m.plan.Scratch[fi.focusIdx+1:]...)
+		case sectionMonthlyTarget:
+			srcText = m.plan.MonthlyTargets[fi.focusIdx].Text
+			m.plan.MonthlyTargets = append(m.plan.MonthlyTargets[:fi.focusIdx], m.plan.MonthlyTargets[fi.focusIdx+1:]...)
+		}
+	}
+
+	if srcText == "" {
+		m.statusMsg = "No item to move"
+		return m, nil
+	}
+
+	// Add to destination
+	destName := sectionName(destSection)
+	switch destSection {
+	case sectionWeekFocus:
+		if destSubIdx >= 0 {
+			// Add as sub-item of a specific goal
+			if destSubIdx >= len(m.plan.WeekFocus) {
+				m.statusMsg = fmt.Sprintf("Goal %d does not exist", destSubIdx+1)
+				return m, nil
+			}
+			m.plan.WeekFocus[destSubIdx].SubItems = append(m.plan.WeekFocus[destSubIdx].SubItems, model.SubItem{Text: srcText})
+			destName = fmt.Sprintf("goal %d", destSubIdx+1)
+		} else {
+			m.plan.WeekFocus = append(m.plan.WeekFocus, model.FocusItem{Text: srcText})
+		}
+	case sectionToday:
+		m.plan.Today = append(m.plan.Today, model.TodoItem{Text: srcText, CreatedAt: time.Now()})
+	case sectionHibana:
+		m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{Text: srcText, CreatedAt: time.Now()})
+	case sectionMonthlyTarget:
+		m.plan.MonthlyTargets = append(m.plan.MonthlyTargets, model.MonthlyTarget{Text: srcText, CreatedAt: time.Now()})
+	}
+
+	m.planView.SetData(m.plan, m.project)
+	m.statusMsg = fmt.Sprintf("Moved to %s: %s", destName, srcText)
 	return m, nil
 }
 
