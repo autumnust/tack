@@ -62,10 +62,11 @@ type AppModel struct {
 	height int
 
 	// Status
-	loading    bool
-	cacheStale bool
-	statusMsg  string
-	err        error
+	loading      bool
+	cacheStale   bool
+	statusMsg    string
+	err          error
+	confirmQuit  bool
 }
 
 // Messages
@@ -547,6 +548,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Quit confirmation takes highest priority
+		if m.confirmQuit {
+			m.confirmQuit = false
+			switch msg.String() {
+			case "q", "y":
+				return m.initiateQuit()
+			default:
+				m.statusMsg = ""
+				return m, nil
+			}
+		}
+
 		// Command bar takes priority when active
 		if m.command.IsActive() {
 			result, cmd := m.command.Update(msg)
@@ -563,7 +576,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q":
-			return m.initiateQuit()
+			m.confirmQuit = true
+			m.statusMsg = "Quit? (q/y to confirm, any other key to cancel)"
+			return m, nil
 		case "ctrl+c":
 			return m, tea.Quit
 		case ":":

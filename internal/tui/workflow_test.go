@@ -279,7 +279,7 @@ func TestQuitWithOpsShowsReview(t *testing.T) {
 	assertOpsLen(t, app, 1)
 
 	// Press q — should show review
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 
 	// Press Esc — back to board
@@ -292,11 +292,48 @@ func TestQuitNoOps(t *testing.T) {
 	app := newTestApp()
 	assertOpsLen(t, app, 0)
 
+	// First q prompts confirmation
 	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	app = m.(AppModel)
-	// Should get a Quit command
+	if cmd != nil {
+		t.Error("expected no command on first q (confirmation prompt)")
+	}
+
+	// Second q confirms quit
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	app = m.(AppModel)
 	if cmd == nil {
-		t.Error("expected Quit command, got nil")
+		t.Error("expected Quit command on second q, got nil")
+	}
+}
+
+// Test 8b: Quit confirmation cancelled by other key
+func TestQuitConfirmCancel(t *testing.T) {
+	app := newTestApp()
+
+	// First q shows confirmation
+	app = sendKeys(t, app, "q")
+	assertStatus(t, app, "Quit?")
+
+	// Any other key cancels
+	app = sendKeys(t, app, "j")
+	if app.confirmQuit {
+		t.Error("expected confirmQuit to be cleared")
+	}
+	assertView(t, app, viewBoard)
+}
+
+// Test 8c: Quit confirmed with y
+func TestQuitConfirmWithY(t *testing.T) {
+	app := newTestApp()
+
+	app = sendKeys(t, app, "q")
+	assertStatus(t, app, "Quit?")
+
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	_ = m.(AppModel)
+	if cmd == nil {
+		t.Error("expected Quit command on y confirm, got nil")
 	}
 }
 
@@ -1335,7 +1372,7 @@ func TestReviewNavigation(t *testing.T) {
 	app := newTestApp()
 	app = sendCommand(t, app, "mv #101 done")
 	app = sendCommand(t, app, "mv #201 done")
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 
 	if app.review.cursorIdx != 0 {
@@ -1355,7 +1392,7 @@ func TestReviewNavigation(t *testing.T) {
 func TestReviewToggle(t *testing.T) {
 	app := newTestApp()
 	app = sendCommand(t, app, "mv #101 done")
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 
 	// Initially checked
@@ -1377,7 +1414,7 @@ func TestReviewCheckAll(t *testing.T) {
 	app := newTestApp()
 	app = sendCommand(t, app, "mv #101 done")
 	app = sendCommand(t, app, "mv #201 done")
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 
 	// Uncheck all
@@ -1397,7 +1434,7 @@ func TestReviewCheckAll(t *testing.T) {
 func TestReviewDiscard(t *testing.T) {
 	app := newTestApp()
 	app = sendCommand(t, app, "mv #101 done")
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 
 	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
@@ -1503,7 +1540,7 @@ func TestReviewRendering(t *testing.T) {
 	app.height = 40
 	app = sendCommand(t, app, "mv #101 done")
 	app = sendCommand(t, app, `c #101 "test"`)
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 
 	output := app.View()
@@ -1544,7 +1581,7 @@ func TestViewAllModesNoPanic(t *testing.T) {
 	// Board + ops + review
 	app = sendCommand(t, app, "board")
 	app = sendCommand(t, app, "mv #101 done")
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	assertView(t, app, viewReview)
 	_ = app.View()
 }
@@ -1795,7 +1832,7 @@ func TestDoneFocusPurgedOnQuit(t *testing.T) {
 	app.plan.WeekFocus[0].Done = true
 
 	// q triggers initiateQuit which purges done items
-	app = sendKeys(t, app, "q")
+	app = sendKeys(t, app, "q", "q")
 	if len(app.plan.WeekFocus) != 1 {
 		t.Errorf("expected 1 focus item after quit purge, got %d", len(app.plan.WeekFocus))
 	}
