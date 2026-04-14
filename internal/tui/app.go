@@ -576,6 +576,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q":
+			if m.ops.Len() > 0 {
+				return m.initiateQuit()
+			}
 			m.confirmQuit = true
 			m.statusMsg = "Quit? (q/y to confirm, any other key to cancel)"
 			return m, nil
