@@ -1360,11 +1360,20 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		return m.insertPlanItem()
 	case "x":
-		m.planView.ToggleShowDone()
-		if m.planView.ShowingDone() {
-			m.statusMsg = "Showing done items"
+		if m.planView.section == sectionHibana {
+			m.planView.ToggleHibanaExpanded()
+			if m.planView.HibanaExpanded() {
+				m.statusMsg = "Expanded view"
+			} else {
+				m.statusMsg = "Collapsed view"
+			}
 		} else {
-			m.statusMsg = "Hiding done items"
+			m.planView.ToggleShowDone()
+			if m.planView.ShowingDone() {
+				m.statusMsg = "Showing done items"
+			} else {
+				m.statusMsg = "Hiding done items"
+			}
 		}
 	}
 	return m, nil

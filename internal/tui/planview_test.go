@@ -118,6 +118,7 @@ func TestPlanView_MultiLineScrolling(t *testing.T) {
 	}
 	m := NewPlanViewModel(plan, nil)
 	m.SetSection(sectionHibana)
+	m.ToggleHibanaExpanded() // expand to get multi-line rendering
 
 	// Terminal height 16: availLines = 16 - 6 = 10 lines
 	// Each item = 3 lines, so ~3 items fit on screen

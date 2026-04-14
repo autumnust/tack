@@ -50,7 +50,8 @@ type PlanViewModel struct {
 	scrollOffset int
 	viewHeight   int
 	width        int
-	showDone     bool
+	showDone        bool
+	hibanaExpanded  bool
 
 }
 
@@ -81,6 +82,14 @@ func (m *PlanViewModel) ToggleShowDone() {
 
 func (m *PlanViewModel) ShowingDone() bool {
 	return m.showDone
+}
+
+func (m *PlanViewModel) ToggleHibanaExpanded() {
+	m.hibanaExpanded = !m.hibanaExpanded
+}
+
+func (m *PlanViewModel) HibanaExpanded() bool {
+	return m.hibanaExpanded
 }
 
 func (m *PlanViewModel) rebuildFlat() {
@@ -722,8 +731,19 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 
 	// prefix: cursor(2) + lineNo(3) + space(1) = 6
 	prefixWidth := 6
-	pad := strings.Repeat(" ", prefixWidth)
 	contentWidth := m.width - prefixWidth
+	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+
+	// Collapsed: first line only, muted
+	if !m.hibanaExpanded {
+		firstLine := strings.SplitN(note.Text, "\n", 2)[0]
+		suffixWidth := lipgloss.Width(age)
+		firstWrapped := splitWrap(firstLine, contentWidth-suffixWidth, contentWidth)
+		return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, mutedStyle.Render(firstWrapped[0]), age)
+	}
+
+	// Expanded: full content
+	pad := strings.Repeat(" ", prefixWidth)
 	contStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
 	// Split on newlines to preserve multiline formatting
