@@ -395,7 +395,18 @@ func (m AppModel) buildDetailModel(issue *model.ProjectItem) DetailModel {
 		if rendered, ok := m.renderedDetails[issue.Number]; ok {
 			bodyContent = rendered
 		} else {
-			bodyContent = renderBodyAndComments(issue, m.width)
+			// If the passed-in issue has no body (e.g. synthetic epic),
+			// look up the actual project item.
+			bodyIssue := issue
+			if bodyIssue.Body == "" && m.project != nil {
+				for i := range m.project.Items {
+					if m.project.Items[i].Number == issue.Number {
+						bodyIssue = &m.project.Items[i]
+						break
+					}
+				}
+			}
+			bodyContent = renderBodyAndComments(bodyIssue, m.width)
 		}
 		return newPrerenderedEpicModel(issue, navItems, bodyContent, m.width, m.height)
 	}
@@ -637,11 +648,21 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if result.Issue != nil {
 				m.detail = m.buildDetailModel(result.Issue)
 			} else if result.Epic != nil {
-				epicIssue := &model.ProjectItem{
-					Title:  result.Epic.Title,
-					Number: result.Epic.Number,
-					URL:    result.Epic.URL,
-					Repo:   result.Epic.Repo,
+				// Look up the actual project item to get body/comments
+				var epicIssue *model.ProjectItem
+				for i := range m.project.Items {
+					if m.project.Items[i].Number == result.Epic.Number {
+						epicIssue = &m.project.Items[i]
+						break
+					}
+				}
+				if epicIssue == nil {
+					epicIssue = &model.ProjectItem{
+						Title:  result.Epic.Title,
+						Number: result.Epic.Number,
+						URL:    result.Epic.URL,
+						Repo:   result.Epic.Repo,
+					}
 				}
 				m.detail = m.buildDetailModel(epicIssue)
 			}

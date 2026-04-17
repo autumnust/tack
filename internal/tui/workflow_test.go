@@ -54,7 +54,7 @@ func testProject() *model.Project {
 			},
 		},
 		Items: []model.ProjectItem{
-			{ID: "n-100", ItemID: "pi-100", Title: "Epic Alpha", Number: 100, Status: "In Progress", Assignees: []string{"alice"}, Repo: "test-org/repo", URL: "https://github.com/test-org/repo/issues/100"},
+			{ID: "n-100", ItemID: "pi-100", Title: "Epic Alpha", Number: 100, Status: "In Progress", Assignees: []string{"alice"}, Repo: "test-org/repo", URL: "https://github.com/test-org/repo/issues/100", Body: "This epic covers the Alpha milestone deliverables."},
 			{ID: "n-101", ItemID: "pi-101", Title: "Child 1 of 100", Number: 101, Status: "In Progress", Assignees: []string{"alice"}, Repo: "test-org/repo", URL: "https://github.com/test-org/repo/issues/101", Parent: &model.ParentRef{Number: 100, Title: "Epic Alpha", Repo: "test-org/repo"}},
 			{ID: "n-102", ItemID: "pi-102", Title: "Child 2 of 100", Number: 102, Status: "Done", State: "closed", Assignees: []string{"bob"}, Repo: "test-org/repo", URL: "https://github.com/test-org/repo/issues/102", Parent: &model.ParentRef{Number: 100, Title: "Epic Alpha", Repo: "test-org/repo"}},
 			{ID: "n-200", ItemID: "pi-200", Title: "Epic Beta", Number: 200, Status: "Todo", Assignees: []string{"bob"}, Repo: "test-org/repo", URL: "https://github.com/test-org/repo/issues/200"},
@@ -1904,6 +1904,39 @@ func TestFetchDataNilClient(t *testing.T) {
 	}
 	if !strings.Contains(done.err.Error(), "not available") {
 		t.Errorf("expected 'not available' in error, got: %s", done.err)
+	}
+}
+
+// Test: Epic detail opened from board should show parent body, not "no description"
+func TestEpicDetailShowsBody(t *testing.T) {
+	app := newTestApp()
+	app.width = 120
+	app.height = 40
+
+	// Simulate what the board Enter handler does for epics: creates a synthetic
+	// ProjectItem with no Body, then calls buildDetailModel.
+	epicRef := &model.ParentRef{
+		Number: 100,
+		Title:  "Epic Alpha",
+		Repo:   "test-org/repo",
+	}
+	syntheticIssue := &model.ProjectItem{
+		Title:  epicRef.Title,
+		Number: epicRef.Number,
+		URL:    epicRef.URL,
+		Repo:   epicRef.Repo,
+	}
+
+	// Without pre-rendered content, the fallback should still find the body
+	app.detail = app.buildDetailModel(syntheticIssue)
+	app.view = viewDetail
+
+	output := app.View()
+	if strings.Contains(output, "no description") {
+		t.Error("epic detail should show body content, not 'no description'")
+	}
+	if !strings.Contains(output, "Alpha milestone") {
+		t.Error("expected epic body text 'Alpha milestone' in detail view")
 	}
 }
 
