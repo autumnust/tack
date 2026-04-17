@@ -655,31 +655,35 @@ func (m AppModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.view = m.prevView
 		return m, nil
-	case "j", "down":
+	case "tab":
 		if m.detail.HasNav() {
+			m.detail.ToggleFocus()
+		}
+	case "j", "down":
+		if m.detail.HasNav() && m.detail.NavFocused() {
 			m.detail.NavDown()
-			m.detail.RefreshEpicContent(m.width)
 		} else {
 			m.detail.viewport.LineDown(1)
 		}
 	case "k", "up":
-		if m.detail.HasNav() {
+		if m.detail.HasNav() && m.detail.NavFocused() {
 			m.detail.NavUp()
-			m.detail.RefreshEpicContent(m.width)
 		} else {
 			m.detail.viewport.LineUp(1)
 		}
 	case "enter":
-		if nav := m.detail.SelectedNavItem(); nav != nil {
-			// Drill into the selected sub-issue
-			for i := range m.project.Items {
-				if m.project.Items[i].Number == nav.Number {
-					m.detail = m.buildDetailModel(&m.project.Items[i])
-					return m, nil
+		if m.detail.NavFocused() {
+			if nav := m.detail.SelectedNavItem(); nav != nil {
+				// Drill into the selected sub-issue
+				for i := range m.project.Items {
+					if m.project.Items[i].Number == nav.Number {
+						m.detail = m.buildDetailModel(&m.project.Items[i])
+						return m, nil
+					}
 				}
+				// Sub-issue not in project — can't drill further
+				m.statusMsg = fmt.Sprintf("#%d is not in the project — press 'o' to open in browser", nav.Number)
 			}
-			// Sub-issue not in project — can't drill further
-			m.statusMsg = fmt.Sprintf("#%d is not in the project — press 'o' to open in browser", nav.Number)
 		}
 	case "d":
 		m.detail.viewport.HalfViewDown()
@@ -838,7 +842,7 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 			} else if m.view == viewDetail && m.detail.HasNav() {
 				if lineNum >= 1 && lineNum <= len(m.detail.navItems) {
 					m.detail.navCursor = lineNum - 1
-					m.detail.RefreshEpicContent(m.width)
+					m.detail.FocusNav()
 					m.statusMsg = fmt.Sprintf("Jumped to line %d", lineNum)
 				} else {
 					m.statusMsg = fmt.Sprintf("Line %d out of range (1-%d)", lineNum, len(m.detail.navItems))
@@ -2326,7 +2330,11 @@ func (m AppModel) View() string {
 	var viewHint string
 	switch m.view {
 	case viewDetail:
-		viewHint = helpStyle.Render("[detail] Esc=back  j/k=scroll  o=open  :=cmd")
+		if m.detail.HasNav() {
+			viewHint = helpStyle.Render("[detail] Esc=back  Tab=switch pane  j/k=nav  Enter=drill  o=open  :=cmd")
+		} else {
+			viewHint = helpStyle.Render("[detail] Esc=back  j/k=scroll  o=open  :=cmd")
+		}
 	case viewReview:
 		viewHint = helpStyle.Render("[review] Enter=toggle  a=all  n=none  y=push  d=discard  Esc=back")
 	case viewPlan:

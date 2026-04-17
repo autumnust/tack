@@ -28,9 +28,10 @@ type DetailModel struct {
 	viewport viewport.Model
 	ready    bool
 
-	// Navigable sub-issues
-	navItems  []NavItem
-	navCursor int
+	// Navigable sub-issues (upper pane)
+	navItems   []NavItem
+	navCursor  int
+	navFocused bool // true = upper pane focused, false = lower pane (body)
 }
 
 // SelectedNavItem returns the currently highlighted nav item, or nil.
@@ -55,6 +56,27 @@ func (m *DetailModel) NavUp() {
 
 func (m *DetailModel) HasNav() bool {
 	return len(m.navItems) > 0
+}
+
+func (m *DetailModel) NavFocused() bool {
+	return m.navFocused
+}
+
+func (m *DetailModel) ToggleFocus() {
+	m.navFocused = !m.navFocused
+}
+
+func (m *DetailModel) FocusNav() {
+	m.navFocused = true
+}
+
+// navSectionLines returns the number of terminal lines the nav section occupies.
+// Header + blank + items + blank + divider = len(navItems) + 4
+func (m *DetailModel) navSectionLines() int {
+	if len(m.navItems) == 0 {
+		return 0
+	}
+	return len(m.navItems) + 4
 }
 
 func NewDetailModel(issue *model.ProjectItem, width, height int, allItems []model.ProjectItem) DetailModel {
@@ -124,14 +146,18 @@ func newEpicDetailModel(parent *model.ParentRef, projectChildren []model.Project
 	}
 
 	dm := DetailModel{
-		issue:    issue,
-		navItems: navItems,
-		ready:    true,
+		issue:      issue,
+		navItems:   navItems,
+		navFocused: true,
+		ready:      true,
 	}
 
-	// Render initial content with cursor at 0
-	vp := viewport.New(width, height-4)
-	vp.SetContent(dm.renderEpicContent(width))
+	navHeight := dm.navSectionLines()
+	vpHeight := height - 4 - navHeight
+	if vpHeight < 3 {
+		vpHeight = 3
+	}
+	vp := viewport.New(width, vpHeight)
 	dm.viewport = vp
 	return dm
 }
@@ -139,86 +165,21 @@ func newEpicDetailModel(parent *model.ParentRef, projectChildren []model.Project
 // newPrerenderedEpicModel creates an epic detail with pre-rendered body but interactive nav items.
 func newPrerenderedEpicModel(issue *model.ProjectItem, navItems []NavItem, bodyContent string, width, height int) DetailModel {
 	dm := DetailModel{
-		issue:    issue,
-		navItems: navItems,
-		ready:    true,
+		issue:      issue,
+		navItems:   navItems,
+		navFocused: true,
+		ready:      true,
 	}
-	vp := viewport.New(width, height-4)
-	vp.SetContent(dm.renderEpicContentWithBody(bodyContent, width))
+
+	navHeight := dm.navSectionLines()
+	vpHeight := height - 4 - navHeight
+	if vpHeight < 3 {
+		vpHeight = 3
+	}
+	vp := viewport.New(width, vpHeight)
+	vp.SetContent(bodyContent)
 	dm.viewport = vp
 	return dm
-}
-
-func (m *DetailModel) RefreshEpicContent(width int) {
-	if len(m.navItems) > 0 {
-		m.viewport.SetContent(m.renderEpicContent(width))
-	}
-}
-
-func (m DetailModel) renderEpicContent(width int) string {
-	return m.renderEpicContentWithBody("", width)
-}
-
-func (m DetailModel) renderEpicContentWithBody(body string, width int) string {
-	var sb strings.Builder
-
-	if len(m.navItems) > 0 {
-		childHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
-			Render(fmt.Sprintf("── Sub-Issues (%d) ", len(m.navItems)))
-		sb.WriteString(childHeader)
-		sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
-		sb.WriteString("\n\n")
-
-		for i, ni := range m.navItems {
-			branch := "├─"
-			if i == len(m.navItems)-1 {
-				branch = "└─"
-			}
-
-			cursor := "  "
-			if i == m.navCursor {
-				cursor = cursorStyle.Render("► ")
-			}
-
-			// Line number (1-indexed, right-aligned)
-			lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
-				Render(fmt.Sprintf("%d", i+1))
-
-			done := isDoneStr(ni.Status, ni.State)
-			num := issueNumStyle.Render(fmt.Sprintf("#%d", ni.Number))
-			title := ni.Title
-			if done {
-				doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
-				num = doneStyle.Render(fmt.Sprintf("#%d", ni.Number))
-				title = doneStyle.Render(title)
-			} else {
-				title = issueTitleStyle.Render(title)
-			}
-
-			status := ""
-			if ni.Status != "" {
-				status = renderStatus(ni.Status)
-			} else if ni.State == "closed" {
-				status = renderStatus("Done")
-			} else {
-				status = renderStatus("")
-			}
-
-			assignees := ""
-			if len(ni.Assignees) > 0 {
-				assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(ni.Assignees, ", ")))
-			}
-
-			sb.WriteString(fmt.Sprintf("%s%s %s %s %s  %s%s\n", cursor, lineNo, branch, num, title, status, assignees))
-		}
-		sb.WriteString("\n")
-	}
-
-	if body != "" {
-		sb.WriteString(body)
-	}
-
-	return sb.String()
 }
 
 func isDoneStr(status, state string) bool {
@@ -227,8 +188,70 @@ func isDoneStr(status, state string) bool {
 }
 
 func (m *DetailModel) SetSize(width, height int) {
+	navHeight := m.navSectionLines()
+	vpHeight := height - 4 - navHeight
+	if vpHeight < 3 {
+		vpHeight = 3
+	}
 	m.viewport.Width = width
-	m.viewport.Height = height - 4
+	m.viewport.Height = vpHeight
+}
+
+// renderNavSection renders the upper pane: sub-issues list with cursor.
+func (m DetailModel) renderNavSection(width int) string {
+	var sb strings.Builder
+
+	childHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
+		Render(fmt.Sprintf("── Sub-Issues (%d) ", len(m.navItems)))
+	sb.WriteString(childHeader)
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
+	sb.WriteString("\n\n")
+
+	for i, ni := range m.navItems {
+		branch := "├─"
+		if i == len(m.navItems)-1 {
+			branch = "└─"
+		}
+
+		cursor := "  "
+		if m.navFocused && i == m.navCursor {
+			cursor = cursorStyle.Render("► ")
+		}
+
+		// Line number (1-indexed, right-aligned)
+		lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
+			Render(fmt.Sprintf("%d", i+1))
+
+		done := isDoneStr(ni.Status, ni.State)
+		num := issueNumStyle.Render(fmt.Sprintf("#%d", ni.Number))
+		title := ni.Title
+		if done {
+			doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
+			num = doneStyle.Render(fmt.Sprintf("#%d", ni.Number))
+			title = doneStyle.Render(title)
+		} else {
+			title = issueTitleStyle.Render(title)
+		}
+
+		status := ""
+		if ni.Status != "" {
+			status = renderStatus(ni.Status)
+		} else if ni.State == "closed" {
+			status = renderStatus("Done")
+		} else {
+			status = renderStatus("")
+		}
+
+		assignees := ""
+		if len(ni.Assignees) > 0 {
+			assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(ni.Assignees, ", ")))
+		}
+
+		sb.WriteString(fmt.Sprintf("%s%s %s %s %s  %s%s\n", cursor, lineNo, branch, num, title, status, assignees))
+	}
+	sb.WriteString("\n")
+
+	return sb.String()
 }
 
 func (m DetailModel) View(width int) string {
@@ -257,6 +280,13 @@ func (m DetailModel) View(width int) string {
 
 		separator := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", min(width-4, 80)))
 		sb.WriteString(separator)
+		sb.WriteString("\n")
+	}
+
+	if len(m.navItems) > 0 {
+		sb.WriteString(m.renderNavSection(width))
+		divider := lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", min(width-4, 80)))
+		sb.WriteString(divider)
 		sb.WriteString("\n")
 	}
 
@@ -348,8 +378,8 @@ func renderDetail(issue *model.ProjectItem, width int, allItems []model.ProjectI
 
 func preRenderItem(issue *model.ProjectItem, renderer *glamour.TermRenderer, childrenMap map[int][]model.SubIssue, allItems []model.ProjectItem) string {
 	// Note: sub-issues from childrenMap are NOT rendered here because
-	// buildDetailModel adds them as interactive nav items. Rendering
-	// them here too would cause duplication.
+	// buildDetailModel adds them as interactive nav items in the upper pane.
+	// Rendering them here too would cause duplication.
 	var sb strings.Builder
 
 	if issue.Body != "" {

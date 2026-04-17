@@ -1907,6 +1907,62 @@ func TestFetchDataNilClient(t *testing.T) {
 	}
 }
 
+// Test: Detail split pane — Tab toggles focus, j/k is section-aware
+func TestDetailSplitPaneFocus(t *testing.T) {
+	app := newTestApp()
+	app.width = 120
+	app.height = 40
+
+	// Build detail for epic #100 which has sub-issues
+	app.detail = app.buildDetailModel(&app.project.Items[0])
+	app.view = viewDetail
+	app.prevView = viewBoard
+
+	if !app.detail.HasNav() {
+		t.Fatal("expected nav items for epic #100")
+	}
+
+	// Initially nav should be focused
+	if !app.detail.NavFocused() {
+		t.Error("expected nav to be focused initially")
+	}
+
+	// j should move nav cursor, not scroll body
+	app = sendKeys(t, app, "j")
+	if app.detail.navCursor != 1 {
+		t.Errorf("expected navCursor=1 after j in nav pane, got %d", app.detail.navCursor)
+	}
+
+	// Tab should switch focus to body
+	app = sendKeys(t, app, "tab")
+	if app.detail.NavFocused() {
+		t.Error("expected body focused after Tab")
+	}
+
+	// j should now scroll body, not move nav cursor
+	prevCursor := app.detail.navCursor
+	app = sendKeys(t, app, "j")
+	if app.detail.navCursor != prevCursor {
+		t.Error("j in body pane should not move nav cursor")
+	}
+
+	// Tab back to nav
+	app = sendKeys(t, app, "tab")
+	if !app.detail.NavFocused() {
+		t.Error("expected nav focused after second Tab")
+	}
+
+	// View should render without panic and contain exactly one Sub-Issues section
+	output := app.View()
+	if output == "" {
+		t.Error("expected non-empty view")
+	}
+	count := strings.Count(output, "Sub-Issues")
+	if count != 1 {
+		t.Errorf("expected 'Sub-Issues' once, got %d", count)
+	}
+}
+
 // Test: Detail view for issue with sub-issues should not duplicate sub-issues section
 func TestDetailSubIssuesNoDuplication(t *testing.T) {
 	app := newTestApp()
