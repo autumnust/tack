@@ -347,44 +347,47 @@ func renderDetail(issue *model.ProjectItem, width int, allItems []model.ProjectI
 }
 
 func preRenderItem(issue *model.ProjectItem, renderer *glamour.TermRenderer, childrenMap map[int][]model.SubIssue, allItems []model.ProjectItem) string {
+	// Note: sub-issues from childrenMap are NOT rendered here because
+	// buildDetailModel adds them as interactive nav items. Rendering
+	// them here too would cause duplication.
 	var sb strings.Builder
 
-	if children, ok := childrenMap[issue.Number]; ok && len(children) > 0 {
-		childHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
-			Render(fmt.Sprintf("── Sub-Issues (%d) ", len(children)))
-		sb.WriteString(childHeader)
+	if issue.Body != "" {
+		sb.WriteString(renderMarkdown(renderer, issue.Body))
+	} else {
+		sb.WriteString(helpStyle.Render("  (no description)"))
+	}
+
+	if len(issue.Comments) > 0 {
+		sb.WriteString("\n")
+		commentHeader := lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).
+			Render(fmt.Sprintf("── Comments (%d) ", len(issue.Comments)))
+		sb.WriteString(commentHeader)
 		sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", 40)))
 		sb.WriteString("\n\n")
 
-		for i, child := range children {
-			branch := "├─"
-			if i == len(children)-1 {
-				branch = "└─"
+		for _, c := range issue.Comments {
+			age := timeAgo(c.CreatedAt)
+			author := commentAuthorStyle.Render(c.Author)
+			ts := commentTimeStyle.Render(fmt.Sprintf("(%s)", age))
+			sb.WriteString(fmt.Sprintf("  %s %s\n", author, ts))
+			rendered := renderMarkdown(renderer, c.Body)
+			for _, line := range strings.Split(rendered, "\n") {
+				sb.WriteString("    " + line + "\n")
 			}
-			num := issueNumStyle.Render(fmt.Sprintf("#%d", child.Number))
-			title := issueTitleStyle.Render(child.Title)
-			status := ""
-			assignees := ""
-			for _, item := range allItems {
-				if item.Number == child.Number {
-					status = renderStatus(item.Status)
-					if len(item.Assignees) > 0 {
-						assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(item.Assignees, ", ")))
-					}
-					break
-				}
-			}
-			if status == "" {
-				if child.State == "closed" {
-					status = renderStatus("Done")
-				} else {
-					status = renderStatus("")
-				}
-			}
-			sb.WriteString(fmt.Sprintf("  %s %s %s  %s%s\n", branch, num, title, status, assignees))
+			sb.WriteString("\n")
 		}
-		sb.WriteString("\n")
 	}
+
+	return sb.String()
+}
+
+// renderBodyAndComments renders only the body and comments of an issue,
+// without any child/sub-issue sections. Used as fallback when the interactive
+// nav already handles sub-issues.
+func renderBodyAndComments(issue *model.ProjectItem, width int) string {
+	renderer := getOrCreateRenderer(width)
+	var sb strings.Builder
 
 	if issue.Body != "" {
 		sb.WriteString(renderMarkdown(renderer, issue.Body))

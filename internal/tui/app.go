@@ -388,12 +388,14 @@ func (m AppModel) buildDetailModel(issue *model.ProjectItem) DetailModel {
 	}
 
 	if len(navItems) > 0 {
-		// Build with navigable sub-issues + pre-rendered body
+		// Build with navigable sub-issues + pre-rendered body.
+		// Use pre-rendered content (which excludes sub-issues) or
+		// render body-only to avoid duplicating the nav section.
 		bodyContent := ""
 		if rendered, ok := m.renderedDetails[issue.Number]; ok {
 			bodyContent = rendered
 		} else {
-			bodyContent = renderDetail(issue, m.width, m.project.Items)
+			bodyContent = renderBodyAndComments(issue, m.width)
 		}
 		return newPrerenderedEpicModel(issue, navItems, bodyContent, m.width, m.height)
 	}

@@ -1906,3 +1906,30 @@ func TestFetchDataNilClient(t *testing.T) {
 		t.Errorf("expected 'not available' in error, got: %s", done.err)
 	}
 }
+
+// Test: Detail view for issue with sub-issues should not duplicate sub-issues section
+func TestDetailSubIssuesNoDuplication(t *testing.T) {
+	app := newTestApp()
+	app.width = 120
+	app.height = 40
+
+	// Pre-render all items (simulates normal startup)
+	cmd := app.preRenderAll()
+	if cmd != nil {
+		msg := cmd()
+		if prMsg, ok := msg.(preRenderDoneMsg); ok {
+			app.renderedDetails = prMsg.rendered
+		}
+	}
+
+	// Build detail for issue #100 which has sub-issues in ChildrenMap
+	app.detail = app.buildDetailModel(&app.project.Items[0]) // Epic Alpha #100
+	app.view = viewDetail
+	app.prevView = viewBoard
+
+	output := app.View()
+	count := strings.Count(output, "Sub-Issues")
+	if count != 1 {
+		t.Errorf("expected 'Sub-Issues' to appear exactly once in detail view, got %d occurrences", count)
+	}
+}
