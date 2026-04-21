@@ -24,6 +24,44 @@ func makePlanWithToday(n int) *model.Plan {
 	return p
 }
 
+func TestPlanView_ShowsDoneItemsByDefaultInEachTab(t *testing.T) {
+	plan := &model.Plan{
+		WeekFocus: []model.FocusItem{
+			{Text: "active focus"},
+			{Text: "done focus", Done: true},
+		},
+		Today: []model.TodoItem{
+			{Text: "active task"},
+			{Text: "done task", Done: true},
+		},
+		MonthlyTargets: []model.MonthlyTarget{
+			{Text: "active target"},
+			{Text: "done target", Done: true},
+		},
+	}
+
+	m := NewPlanViewModel(plan, nil)
+
+	if !m.ShowingDone() {
+		t.Fatal("expected done items to be shown by default")
+	}
+
+	m.SetSection(sectionWeekFocus)
+	if got := len(m.flatItems); got != 2 {
+		t.Fatalf("expected week focus to include done items by default, got %d items", got)
+	}
+
+	m.SetSection(sectionToday)
+	if got := len(m.flatItems); got != 2 {
+		t.Fatalf("expected today to include done items by default, got %d items", got)
+	}
+
+	m.SetSection(sectionMonthlyTarget)
+	if got := len(m.flatItems); got != 2 {
+		t.Fatalf("expected monthly targets to include done items by default, got %d items", got)
+	}
+}
+
 func TestPlanView_ViewRendersOnlyVisibleItems(t *testing.T) {
 	plan := makePlanWithToday(20)
 	m := NewPlanViewModel(plan, nil)

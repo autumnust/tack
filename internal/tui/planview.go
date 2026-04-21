@@ -5,14 +5,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/autumnust/tack/internal/model"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type planSection int
 
 const (
-	sectionWeekFocus      planSection = iota
+	sectionWeekFocus planSection = iota
 	sectionToday
 	sectionHibana
 	sectionMonthlyTarget
@@ -36,8 +36,8 @@ func sectionName(s planSection) string {
 // flatItem represents a single navigable row in the plan view.
 type flatItem struct {
 	section  planSection
-	focusIdx int // index into WeekFocus (for sub-items, the parent)
-	subIdx   int // -1 if this is a top-level item, >=0 if sub-item
+	focusIdx int  // index into WeekFocus (for sub-items, the parent)
+	subIdx   int  // -1 if this is a top-level item, >=0 if sub-item
 	header   bool // true for section divider lines (not selectable)
 }
 
@@ -45,14 +45,14 @@ type PlanViewModel struct {
 	plan    *model.Plan
 	project *model.Project
 
-	section      planSection
-	flatItems    []flatItem
-	cursorIdx    int
-	scrollOffset int
-	viewHeight   int
-	width        int
-	showDone        bool
-	hibanaExpanded  bool
+	section        planSection
+	flatItems      []flatItem
+	cursorIdx      int
+	scrollOffset   int
+	viewHeight     int
+	width          int
+	showDone       bool
+	hibanaExpanded bool
 
 	// Search (Hibana tab only)
 	searching   bool   // true while user is typing in search bar
@@ -61,8 +61,9 @@ type PlanViewModel struct {
 
 func NewPlanViewModel(plan *model.Plan, project *model.Project) PlanViewModel {
 	m := PlanViewModel{
-		plan:    plan,
-		project: project,
+		plan:     plan,
+		project:  project,
+		showDone: true,
 	}
 	m.rebuildFlat()
 	return m
@@ -514,9 +515,9 @@ func (m *PlanViewModel) View(width, height int) string {
 
 	if len(m.flatItems) == 0 {
 		hints := map[planSection]string{
-			sectionWeekFocus:    "  No weekly focus items. Use :goal or :pin to add.",
-			sectionToday:        "  No tasks for today. Use :today to add.",
-			sectionHibana:       "  No notes yet. Use :hibana to jot something down.",
+			sectionWeekFocus:     "  No weekly focus items. Use :goal or :pin to add.",
+			sectionToday:         "  No tasks for today. Use :today to add.",
+			sectionHibana:        "  No notes yet. Use :hibana to jot something down.",
 			sectionMonthlyTarget: "  No monthly targets. Use :target to add.",
 		}
 		sb.WriteString(helpStyle.Render(hints[m.section]))

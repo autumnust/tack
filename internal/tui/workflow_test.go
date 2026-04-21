@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/autumnust/tack/internal/grouping"
 	"github.com/autumnust/tack/internal/model"
 	"github.com/autumnust/tack/internal/planning"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // --- Test helpers ---
@@ -71,7 +71,7 @@ func newTestApp() AppModel {
 		config:      cfg,
 		configPath:  "/tmp/test-config.yaml",
 		command:     NewCommandModel(),
-		strategy: grouping.ByEpic{},
+		strategy:    grouping.ByEpic{},
 		plan:        &model.Plan{},
 		annotations: &model.Annotations{},
 	}
@@ -970,8 +970,7 @@ func TestDoneToggle(t *testing.T) {
 	}
 	assertStatus(t, app, "Completed")
 
-	// Show done items, then toggle back
-	app = sendKeys(t, app, "x")
+	// Done items remain visible by default, so toggle back directly.
 	app = sendCommand(t, app, "done")
 	if app.plan.Today[0].Done {
 		t.Error("expected item to be undone")
@@ -1683,8 +1682,8 @@ func TestTargetToggleDone(t *testing.T) {
 	}
 	assertStatus(t, app, "Completed: Ship v1.0")
 
-	// Show done items, then toggle back
-	app = sendKeys(t, app, "x", "enter")
+	// Done items remain visible by default, so toggle back directly.
+	app = sendKeys(t, app, "enter")
 	if app.plan.MonthlyTargets[0].Done {
 		t.Fatal("expected target to be undone after second Enter")
 	}
