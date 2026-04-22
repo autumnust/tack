@@ -160,14 +160,15 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 
 func (m AppModel) Init() tea.Cmd {
 	if m.view == viewPlan {
-		// Planning mode doesn't need GitHub data to start.
-		// If we have cached data and it's stale, refresh in background.
-		// If no cache at all, skip — don't block plan mode on GitHub.
-		m.loading = false
-		if m.project != nil && m.cacheStale {
-			return m.fetchData()
+		// Planning mode doesn't need GitHub data to render, but we still
+		// kick off a background fetch so the board view is ready (or at
+		// least in-flight) when the user switches to it. If the user
+		// switches before the fetch completes, View() shows the loading
+		// screen.
+		if m.project != nil && !m.cacheStale {
+			return nil
 		}
-		return nil
+		return m.fetchData()
 	}
 	if !m.loading && m.cacheStale {
 		// Have cached data but it's stale — background refresh

@@ -1589,21 +1589,21 @@ func TestViewAllModesNoPanic(t *testing.T) {
 // Init() startup path tests
 // =====================================================
 
-// Test 73: Plan mode + no cache → Init() should NOT fetch
+// Test 73: Plan mode + no cache → Init() fetches in background so the board
+// view is ready (or at least in-flight) when the user switches to it.
 func TestInitPlanModeNoCache(t *testing.T) {
 	app := newTestApp()
 	app.view = viewPlan
 	app.project = nil // no cache
-	app.client = nil  // no GitHub client
 	app.loading = true
 	app.cacheStale = false
 
 	cmd := app.Init()
-	if cmd != nil {
-		t.Error("Init() in plan mode with no cache should return nil (no fetch), got non-nil cmd")
+	if cmd == nil {
+		t.Error("Init() in plan mode with no cache should kick off a background fetch")
 	}
-	// Note: Init() uses value receiver so m.loading=false doesn't persist,
-	// but View() handles this with: m.loading && m.view != viewPlan
+	// If the user switches to board before the fetch completes, View()
+	// shows the loading screen via: m.loading && m.view != viewPlan
 }
 
 // Test 74: Plan mode + stale cache → Init() fetches in background
