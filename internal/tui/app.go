@@ -116,7 +116,15 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	if planDir == "" {
 		planDir = "~/.tack"
 	}
-	if store, err := planning.NewStore(planDir); err == nil {
+	redisURL := config.Planning.RedisURL
+	if redisURL == "" {
+		redisURL = os.Getenv("UPSTASH_REDIS_REST_URL")
+	}
+	redisToken := config.Planning.RedisToken
+	if redisToken == "" {
+		redisToken = os.Getenv("UPSTASH_REDIS_REST_TOKEN")
+	}
+	if store, err := planning.NewStoreWithRedis(planDir, redisURL, redisToken); err == nil {
 		app.planStore = store
 		if plan, err := store.LoadPlan(); err == nil {
 			store.Rollover(plan) // archive done items from previous days
@@ -153,6 +161,15 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	if len(startInPlanMode) > 0 && startInPlanMode[0] {
 		app.view = viewPlan
 		app.statusMsg = "Planning mode"
+	}
+	// Suffix a redis indicator to whatever status is set so users can see at a
+	// glance whether cross-device sync is active.
+	if app.planStore != nil {
+		if app.planStore.RedisEnabled() {
+			app.statusMsg = strings.TrimSpace(app.statusMsg + "  (redis: on)")
+		} else {
+			app.statusMsg = strings.TrimSpace(app.statusMsg + "  (redis: off — local only)")
+		}
 	}
 
 	return app

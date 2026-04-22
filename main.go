@@ -26,6 +26,8 @@ func main() {
 	statsMode := flag.Bool("stats", false, "print command usage stats and exit")
 	recapMode := flag.Bool("recap", false, "generate weekly recap and exit (for cron)")
 	whichConfig := flag.Bool("which-config", false, "print which config file would be loaded and exit")
+	migrateLeisureVault := flag.String("migrate-leisure-vault", "", "one-time: import plan.yaml/annotations.yaml from <path> into Redis and exit")
+	migrateForce := flag.Bool("force", false, "with --migrate-leisure-vault, overwrite existing Redis keys")
 	flag.Parse()
 
 	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
@@ -82,6 +84,10 @@ func main() {
 		addHibana(config, *hibanaText)
 		return
 	}
+	if *migrateLeisureVault != "" {
+		runMigration(config, *migrateLeisureVault, *migrateForce)
+		return
+	}
 
 	client, err := ghclient.NewClient()
 	if err != nil && !*planMode {
@@ -97,12 +103,32 @@ func main() {
 	}
 }
 
-func printStats(config model.Config) {
+// resolveRedisCreds returns (url, token), preferring config values and falling
+// back to UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN env vars. Empty
+// strings mean "no Redis backend".
+func resolveRedisCreds(config model.Config) (string, string) {
+	url := config.Planning.RedisURL
+	if url == "" {
+		url = os.Getenv("UPSTASH_REDIS_REST_URL")
+	}
+	token := config.Planning.RedisToken
+	if token == "" {
+		token = os.Getenv("UPSTASH_REDIS_REST_TOKEN")
+	}
+	return url, token
+}
+
+func openStore(config model.Config) (*planning.Store, error) {
 	planDir := config.Planning.Dir
 	if planDir == "" {
 		planDir = "~/.tack"
 	}
-	store, err := planning.NewStore(planDir)
+	url, token := resolveRedisCreds(config)
+	return planning.NewStoreWithRedis(planDir, url, token)
+}
+
+func printStats(config model.Config) {
+	store, err := openStore(config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
@@ -136,11 +162,7 @@ func printStats(config model.Config) {
 }
 
 func generateRecap(config model.Config) {
-	planDir := config.Planning.Dir
-	if planDir == "" {
-		planDir = "~/.tack"
-	}
-	store, err := planning.NewStore(planDir)
+	store, err := openStore(config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
@@ -195,29 +217,43 @@ func generateRecap(config model.Config) {
 }
 
 func addHibana(config model.Config, text string) {
-	planDir := config.Planning.Dir
-	if planDir == "" {
-		planDir = "~/.tack"
-	}
-	store, err := planning.NewStore(planDir)
+	store, err := openStore(config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
-	plan, err := store.LoadPlan()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading plan: %s\n", err)
-		os.Exit(1)
-	}
-	plan.Scratch = append(plan.Scratch, model.ScratchNote{
-		Text:      text,
-		CreatedAt: time.Now(),
-	})
-	if err := store.SavePlan(plan); err != nil {
+	note := model.ScratchNote{Text: text, CreatedAt: time.Now()}
+	if err := store.AddHibana(note); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Hibana: %s\n", text)
+	fmt.Printf("Hibana: %s  %s\n", text, redisStatus(store))
+}
+
+// redisStatus returns a one-line indicator suitable for trailing any CLI output.
+func redisStatus(store *planning.Store) string {
+	if store.RedisEnabled() {
+		return "(redis: on)"
+	}
+	return "(redis: off — local only)"
+}
+
+func runMigration(config model.Config, srcDir string, force bool) {
+	store, err := openStore(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if !store.RedisEnabled() {
+		fmt.Fprintln(os.Stderr, "Error: no Redis backend configured (set UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN or planning.redis_url/redis_token in config)")
+		os.Exit(1)
+	}
+	res, err := store.MigrateLeisureVault(srcDir, force)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Migration failed: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Migration complete: plan=%d, annotations=%d rows, hibana=%d notes\n", res.PlanItems, res.AnnotationRows, res.HibanaNotes)
 }
 
 func findConfig() string {

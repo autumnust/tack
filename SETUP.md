@@ -93,9 +93,46 @@ tack                  # full board mode (requires GitHub auth + valid project UR
 - `tack --stats` — Print command usage stats
 - `tack --recap` — Generate weekly recap markdown
 
+## Cloud sync (Upstash Redis)
+
+Tack can back planning data with an Upstash Redis store for fast cross-device
+reads. When configured, Redis is the source of truth for `plan` and
+`annotations`, and hibana notes live in a dedicated list (`tack:hibana`) so
+concurrent `--hibana` writes from multiple devices don't clobber each other.
+The on-disk YAML is still kept as an offline-readable backup.
+
+Credentials can be set via env vars:
+
+```bash
+export UPSTASH_REDIS_REST_URL="https://<your-db>.upstash.io"
+export UPSTASH_REDIS_REST_TOKEN="<rest-token>"
+```
+
+…or in `config.local.yaml`:
+
+```yaml
+planning:
+  dir: ~/leisure_vault/tack
+  redis_url: "https://<your-db>.upstash.io"
+  redis_token: "<rest-token>"
+```
+
+Env vars win only when the config fields are empty. If neither is set, tack
+runs file-only as before.
+
+### One-time migration
+
+To import existing `plan.yaml` / `annotations.yaml` from a local directory
+(e.g. `~/leisure_vault/tack`) into Redis:
+
+```bash
+tack --migrate-leisure-vault ~/leisure_vault/tack
+# add --force to overwrite an existing tack:plan key
+```
+
 ## Notes
 
 - `config.local.yaml` is gitignored — safe for real project URLs and team info
 - `--plan` mode works entirely offline (no GitHub client required)
-- Planning data syncs via your Obsidian vault's sync mechanism (iCloud, git, etc.)
+- Without Redis configured, planning data syncs via your vault's own mechanism (iCloud, git, etc.)
 - Press `:h` inside tack for full keybinding reference

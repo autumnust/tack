@@ -11,6 +11,8 @@ type TeamMember struct {
 type PlanningConfig struct {
 	Dir          string `yaml:"dir"`
 	MaxWeekFocus int    `yaml:"max_week_focus,omitempty"` // max weekly focus items (default 3)
+	RedisURL     string `yaml:"redis_url,omitempty"`      // Upstash REST URL; also reads UPSTASH_REDIS_REST_URL env
+	RedisToken   string `yaml:"redis_token,omitempty"`    // Upstash REST token; also reads UPSTASH_REDIS_REST_TOKEN env
 }
 
 type Config struct {
