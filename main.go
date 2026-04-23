@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +30,7 @@ func main() {
 	whichConfig := flag.Bool("which-config", false, "print which config file would be loaded and exit")
 	migrateLeisureVault := flag.String("migrate-leisure-vault", "", "one-time: import plan.yaml/annotations.yaml from <path> into Redis and exit")
 	migrateForce := flag.Bool("force", false, "with --migrate-leisure-vault, overwrite existing Redis keys")
+	resolveConflicts := flag.Bool("resolve-conflicts", false, "interactively resolve offline-sync conflicts and exit")
 	flag.Parse()
 
 	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
@@ -86,6 +89,10 @@ func main() {
 	}
 	if *migrateLeisureVault != "" {
 		runMigration(config, *migrateLeisureVault, *migrateForce)
+		return
+	}
+	if *resolveConflicts {
+		runResolveConflicts(config)
 		return
 	}
 
@@ -232,10 +239,147 @@ func addHibana(config model.Config, text string) {
 
 // redisStatus returns a one-line indicator suitable for trailing any CLI output.
 func redisStatus(store *planning.Store) string {
-	if store.RedisEnabled() {
+	if !store.RedisEnabled() {
+		return "(redis: off — local only)"
+	}
+	pending := store.OutboxPending()
+	conflicts := 0
+	if cs, err := store.LoadConflicts(); err == nil {
+		conflicts = len(cs)
+	}
+	switch {
+	case conflicts > 0:
+		return fmt.Sprintf("(redis: on, %d conflicts — run `tack --resolve-conflicts`)", conflicts)
+	case pending > 0:
+		return fmt.Sprintf("(redis: on, %d pending)", pending)
+	default:
 		return "(redis: on)"
 	}
-	return "(redis: off — local only)"
+}
+
+func runResolveConflicts(config model.Config) {
+	store, err := openStore(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if !store.RedisEnabled() {
+		fmt.Fprintln(os.Stderr, "No Redis backend configured; nothing to resolve.")
+		os.Exit(1)
+	}
+	conflicts, err := store.LoadConflicts()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading conflicts: %s\n", err)
+		os.Exit(1)
+	}
+	if len(conflicts) == 0 {
+		fmt.Println("No unresolved conflicts.")
+		return
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	for _, c := range conflicts {
+		fmt.Printf("\n── Conflict on %s (local rev %d vs remote rev %d)\n", c.Key, c.CachedRev, c.RemoteRev)
+		fmt.Println("   [l]ocal  [r]emote  [e]dit  [s]kip")
+		fmt.Printf("   local : %s\n", oneLine(c.LocalPayload))
+		fmt.Printf("   remote: %s\n", oneLine(c.RemotePayload))
+		fmt.Print("> ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(strings.ToLower(choice))
+		switch choice {
+		case "l", "local":
+			if err := pushConflictResolution(store, c.Key, c.LocalPayload); err != nil {
+				fmt.Fprintf(os.Stderr, "push failed: %s\n", err)
+				continue
+			}
+			_ = store.ClearConflict(c.Key)
+			_ = store.DropOutboxForKey(c.Key)
+			fmt.Println("   → local kept")
+		case "r", "remote":
+			_ = store.DropOutboxForKey(c.Key)
+			_ = store.ClearConflict(c.Key)
+			fmt.Println("   → remote kept")
+		case "e", "edit":
+			merged, err := runEditor(c)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "edit failed: %s\n", err)
+				continue
+			}
+			if err := pushConflictResolution(store, c.Key, merged); err != nil {
+				fmt.Fprintf(os.Stderr, "push failed: %s\n", err)
+				continue
+			}
+			_ = store.ClearConflict(c.Key)
+			_ = store.DropOutboxForKey(c.Key)
+			fmt.Println("   → merged version pushed")
+		default:
+			fmt.Println("   → skipped")
+		}
+	}
+}
+
+// pushConflictResolution writes the resolved payload directly, bypassing the
+// outbox (we know we're online since we just read remote). Uses the same rev
+// semantics as a normal write so other devices see the bump.
+func pushConflictResolution(store *planning.Store, key, payload string) error {
+	return store.ResolveBlob(key, payload)
+}
+
+func runEditor(c planning.Conflict) (string, error) {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	f, err := os.CreateTemp("", "tack-conflict-*.txt")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	fmt.Fprintf(f, "<<<<<<< LOCAL\n%s\n=======\n%s\n>>>>>>> REMOTE\n", c.LocalPayload, c.RemotePayload)
+	f.Close()
+
+	cmd := exec.Command(editor, f.Name())
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(f.Name())
+	if err != nil {
+		return "", err
+	}
+	// Strip conflict markers if the user left them.
+	out := stripConflictMarkers(string(b))
+	return out, nil
+}
+
+func stripConflictMarkers(s string) string {
+	var out []string
+	skip := false
+	for _, line := range strings.Split(s, "\n") {
+		switch {
+		case strings.HasPrefix(line, "<<<<<<<"):
+			skip = false // keep local by default if markers left intact
+		case strings.HasPrefix(line, "======="):
+			skip = true
+		case strings.HasPrefix(line, ">>>>>>>"):
+			skip = false
+		default:
+			if !skip {
+				out = append(out, line)
+			}
+		}
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > 120 {
+		s = s[:120] + "…"
+	}
+	return s
 }
 
 func runMigration(config model.Config, srcDir string, force bool) {

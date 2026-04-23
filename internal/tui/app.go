@@ -166,7 +166,13 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	// glance whether cross-device sync is active.
 	if app.planStore != nil {
 		if app.planStore.RedisEnabled() {
-			app.statusMsg = strings.TrimSpace(app.statusMsg + "  (redis: on)")
+			suffix := "(redis: on)"
+			if n, _ := app.planStore.LoadConflicts(); len(n) > 0 {
+				suffix = fmt.Sprintf("(redis: on, %d conflicts — exit and run `tack --resolve-conflicts`)", len(n))
+			} else if p := app.planStore.OutboxPending(); p > 0 {
+				suffix = fmt.Sprintf("(redis: on, %d pending)", p)
+			}
+			app.statusMsg = strings.TrimSpace(app.statusMsg + "  " + suffix)
 		} else {
 			app.statusMsg = strings.TrimSpace(app.statusMsg + "  (redis: off — local only)")
 		}

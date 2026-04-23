@@ -21,11 +21,19 @@ type fakeBackend struct {
 	mu       sync.Mutex
 	kv       map[string]string
 	lists    map[string][]string
+	sets     map[string]map[string]struct{}
+	counters map[string]int64
 	failNext error
+	sticky   bool
 }
 
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{kv: map[string]string{}, lists: map[string][]string{}}
+	return &fakeBackend{
+		kv:       map[string]string{},
+		lists:    map[string][]string{},
+		sets:     map[string]map[string]struct{}{},
+		counters: map[string]int64{},
+	}
 }
 
 func (f *fakeBackend) Enabled() bool { return true }
@@ -33,7 +41,9 @@ func (f *fakeBackend) Enabled() bool { return true }
 func (f *fakeBackend) takeFail() error {
 	if f.failNext != nil {
 		e := f.failNext
-		f.failNext = nil
+		if !f.sticky {
+			f.failNext = nil
+		}
 		return e
 	}
 	return nil
@@ -96,6 +106,74 @@ func (f *fakeBackend) LRange(_ context.Context, key string, start, stop int) ([]
 	out := make([]string, stop-start+1)
 	copy(out, list[start:stop+1])
 	return out, nil
+}
+
+func (f *fakeBackend) Incr(_ context.Context, key string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.takeFail(); err != nil {
+		return 0, err
+	}
+	f.counters[key]++
+	// Mirror into kv so GET tack:*:rev also works if callers use it.
+	f.kv[key] = strconvItoa(f.counters[key])
+	return f.counters[key], nil
+}
+
+func (f *fakeBackend) SAdd(_ context.Context, key string, members ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.takeFail(); err != nil {
+		return err
+	}
+	if f.sets[key] == nil {
+		f.sets[key] = map[string]struct{}{}
+	}
+	for _, m := range members {
+		f.sets[key][m] = struct{}{}
+	}
+	return nil
+}
+
+func (f *fakeBackend) SMembers(_ context.Context, key string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.takeFail(); err != nil {
+		return nil, err
+	}
+	s := f.sets[key]
+	out := make([]string, 0, len(s))
+	for m := range s {
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+func strconvItoa(n int64) string {
+	// tiny helper to avoid importing strconv in one place.
+	return fmtInt(n)
+}
+
+func fmtInt(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 func storeWithFake(t *testing.T) (*Store, *fakeBackend) {

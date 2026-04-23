@@ -18,7 +18,15 @@ const (
 	keyPlan        = "tack:plan"
 	keyAnnotations = "tack:annotations"
 	keyHibana      = "tack:hibana"
+	keyUsage       = "tack:usage"
+	keyRecapsIndex = "tack:recaps:index"
+
+	keyPlanRev = "tack:plan:rev"
+	keyAnnRev  = "tack:annotations:rev"
 )
+
+// recapKey returns the Redis key for a single recap by name (e.g. "2026-W16").
+func recapKey(name string) string { return "tack:recap:" + name }
 
 // redisBackend abstracts the small slice of Redis we need so the store can be
 // tested with an in-memory fake.
@@ -29,6 +37,9 @@ type redisBackend interface {
 	Del(ctx context.Context, key string) error
 	RPush(ctx context.Context, key string, vals ...string) error
 	LRange(ctx context.Context, key string, start, stop int) ([]string, error)
+	Incr(ctx context.Context, key string) (int64, error)
+	SAdd(ctx context.Context, key string, members ...string) error
+	SMembers(ctx context.Context, key string) ([]string, error)
 }
 
 // nopBackend is used when no Redis credentials are configured. Gets always
@@ -42,6 +53,9 @@ func (nopBackend) Set(context.Context, string, string) error                    
 func (nopBackend) Del(context.Context, string) error                            { return nil }
 func (nopBackend) RPush(context.Context, string, ...string) error               { return nil }
 func (nopBackend) LRange(context.Context, string, int, int) ([]string, error)   { return nil, nil }
+func (nopBackend) Incr(context.Context, string) (int64, error)                  { return 0, nil }
+func (nopBackend) SAdd(context.Context, string, ...string) error                { return nil }
+func (nopBackend) SMembers(context.Context, string) ([]string, error)           { return nil, nil }
 
 // restBackend talks to Upstash's HTTP REST endpoint.
 type restBackend struct {
@@ -130,6 +144,48 @@ func (r *restBackend) RPush(ctx context.Context, key string, vals ...string) err
 	args := append([]string{"RPUSH", key}, vals...)
 	_, err := r.do(ctx, args...)
 	return err
+}
+
+func (r *restBackend) Incr(ctx context.Context, key string) (int64, error) {
+	raw, err := r.do(ctx, "INCR", key)
+	if err != nil {
+		return 0, err
+	}
+	// Upstash returns numbers as JSON numbers for INCR.
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, nil
+	}
+	// Some proxies stringify the result; fall back to parsing.
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(s, 10, 64)
+}
+
+func (r *restBackend) SAdd(ctx context.Context, key string, members ...string) error {
+	if len(members) == 0 {
+		return nil
+	}
+	args := append([]string{"SADD", key}, members...)
+	_, err := r.do(ctx, args...)
+	return err
+}
+
+func (r *restBackend) SMembers(ctx context.Context, key string) ([]string, error) {
+	raw, err := r.do(ctx, "SMEMBERS", key)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r *restBackend) LRange(ctx context.Context, key string, start, stop int) ([]string, error) {

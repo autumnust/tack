@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/autumnust/tack/internal/model"
 	"gopkg.in/yaml.v3"
@@ -15,6 +17,8 @@ type MigrationResult struct {
 	PlanItems      int // 1 if plan.yaml was found and pushed, else 0
 	AnnotationRows int
 	HibanaNotes    int
+	UsageEntries   int
+	Recaps         int
 }
 
 // MigrateLeisureVault reads plan.yaml and annotations.yaml from srcDir and
@@ -96,6 +100,73 @@ func (s *Store) MigrateLeisureVault(srcDir string, force bool) (MigrationResult,
 		res.AnnotationRows = len(ann.Items)
 	} else if !os.IsNotExist(err) {
 		return res, fmt.Errorf("read %s: %w", annPath, err)
+	}
+
+	// Initialize rev counters if unset so future writes start from a known point.
+	for _, k := range []string{keyPlanRev, keyAnnRev} {
+		if _, ok, _ := s.redis.Get(ctx, k); !ok {
+			if _, err := s.redis.Incr(ctx, k); err != nil {
+				return res, fmt.Errorf("init %s: %w", k, err)
+			}
+		}
+	}
+
+	// Usage log → tack:usage list.
+	usagePath := filepath.Join(srcDir, "usage.log")
+	if data, err := os.ReadFile(usagePath); err == nil {
+		if force {
+			if err := s.redis.Del(ctx, keyUsage); err != nil {
+				return res, fmt.Errorf("del %s: %w", keyUsage, err)
+			}
+		}
+		var vals []string
+		for _, line := range strings.Split(string(data), "\n") {
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			ts, _ := time.Parse(time.RFC3339, parts[0])
+			if ts.IsZero() {
+				ts = time.Now()
+			}
+			b, err := json.Marshal(UsageEntry{TS: ts, Cmd: parts[1]})
+			if err != nil {
+				continue
+			}
+			vals = append(vals, string(b))
+		}
+		if len(vals) > 0 {
+			if err := s.redis.RPush(ctx, keyUsage, vals...); err != nil {
+				return res, fmt.Errorf("rpush %s: %w", keyUsage, err)
+			}
+			res.UsageEntries = len(vals)
+		}
+	} else if !os.IsNotExist(err) {
+		return res, fmt.Errorf("read %s: %w", usagePath, err)
+	}
+
+	// Recaps dir → per-name keys + index.
+	recapsPath := filepath.Join(srcDir, "recaps")
+	if entries, err := os.ReadDir(recapsPath); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".md")
+			body, err := os.ReadFile(filepath.Join(recapsPath, e.Name()))
+			if err != nil {
+				continue
+			}
+			if err := s.redis.Set(ctx, recapKey(name), string(body)); err != nil {
+				return res, fmt.Errorf("set %s: %w", recapKey(name), err)
+			}
+			if err := s.redis.SAdd(ctx, keyRecapsIndex, name); err != nil {
+				return res, fmt.Errorf("sadd %s: %w", keyRecapsIndex, err)
+			}
+			res.Recaps++
+		}
+	} else if !os.IsNotExist(err) {
+		return res, fmt.Errorf("read %s: %w", recapsPath, err)
 	}
 
 	return res, nil

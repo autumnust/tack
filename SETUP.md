@@ -96,10 +96,33 @@ tack                  # full board mode (requires GitHub auth + valid project UR
 ## Cloud sync (Upstash Redis)
 
 Tack can back planning data with an Upstash Redis store for fast cross-device
-reads. When configured, Redis is the source of truth for `plan` and
-`annotations`, and hibana notes live in a dedicated list (`tack:hibana`) so
-concurrent `--hibana` writes from multiple devices don't clobber each other.
-The on-disk YAML is still kept as an offline-readable backup.
+reads. When configured, Redis is the source of truth for `plan`,
+`annotations`, `hibana`, `usage`, and `recaps`. The on-disk YAML/log/markdown
+files are still written as offline-readable backups.
+
+Keys:
+- `tack:plan` / `tack:annotations` — JSON blobs, paired with
+  `tack:plan:rev` / `tack:annotations:rev` counters for conflict detection
+- `tack:hibana` — list of scratch notes (append-only)
+- `tack:usage` — list of command usage entries (append-only)
+- `tack:recap:<name>` — one key per weekly recap, indexed by `tack:recaps:index`
+
+### Offline behavior
+
+Writes that can't reach Redis land in a local `.outbox.jsonl` buffer and
+replay on the next `tack` invocation. Append-only keys (usage, hibana) replay
+straight through. Blob keys (plan, annotations, recaps) compare a cached
+revision against the remote; if another device advanced the remote while you
+were offline, the conflict is persisted under `.conflicts/` and tack refuses
+to auto-resolve. The CLI/TUI status line shows `(redis: on, N conflicts — run
+`tack --resolve-conflicts`)`.
+
+Resolve conflicts interactively:
+
+```bash
+tack --resolve-conflicts
+# per conflict: [l]ocal / [r]emote / [e]dit / [s]kip
+```
 
 Credentials can be set via env vars:
 
@@ -122,12 +145,12 @@ runs file-only as before.
 
 ### One-time migration
 
-To import existing `plan.yaml` / `annotations.yaml` from a local directory
-(e.g. `~/leisure_vault/tack`) into Redis:
+To import existing `plan.yaml`, `annotations.yaml`, `usage.log`, and
+`recaps/*.md` from a local directory (e.g. `~/leisure_vault/tack`) into Redis:
 
 ```bash
 tack --migrate-leisure-vault ~/leisure_vault/tack
-# add --force to overwrite an existing tack:plan key
+# add --force to overwrite existing Redis keys (including tack:usage)
 ```
 
 ## Notes

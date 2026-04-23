@@ -20,9 +20,11 @@ import (
 // Hibana (scratch) notes live in a dedicated Redis list (tack:hibana) so
 // concurrent appends from multiple devices don't clobber each other.
 type Store struct {
-	dir    string
-	syncer Syncer
-	redis  redisBackend
+	dir       string
+	syncer    Syncer
+	redis     redisBackend
+	outbox    *outbox
+	syncState *syncState
 }
 
 // NewStore creates a store rooted at dir with no Redis backend.
@@ -44,7 +46,12 @@ func NewStoreWithRedis(dir, redisURL, redisToken string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, redis: nopBackend{}}
+	s := &Store{
+		dir:       dir,
+		redis:     nopBackend{},
+		outbox:    newOutbox(dir),
+		syncState: newSyncState(dir),
+	}
 	if redisURL != "" && redisToken != "" {
 		s.redis = newRESTBackend(redisURL, redisToken)
 	}
@@ -80,6 +87,9 @@ func (s *Store) ctx() (context.Context, context.CancelFunc) {
 // when Redis is enabled.
 func (s *Store) LoadPlan() (*model.Plan, error) {
 	s.pull()
+	if s.RedisEnabled() {
+		_, _ = s.Reconcile()
+	}
 
 	plan, err := s.loadPlanRedisOrYAML()
 	if err != nil {
@@ -137,11 +147,10 @@ func (s *Store) fetchHibanaList() ([]model.ScratchNote, error) {
 
 // SavePlan writes the plan everywhere it belongs:
 //   - local YAML (always, for offline reads and git sync)
-//   - Redis tack:plan (without Scratch — that's the list's job)
+//   - Redis tack:plan (without Scratch — that's the list's job) + rev bump
 //   - Redis tack:hibana (full rewrite via DEL + RPUSH)
 //
-// Redis failures are logged but do not fail the call, per the offline-tolerant
-// contract in the issue's DoD.
+// Redis failures route the write into the local outbox for later replay.
 func (s *Store) SavePlan(plan *model.Plan) error {
 	if err := s.saveYAML(s.planPath(), plan); err != nil {
 		return err
@@ -150,19 +159,32 @@ func (s *Store) SavePlan(plan *model.Plan) error {
 	if s.RedisEnabled() {
 		planCopy := *plan
 		planCopy.Scratch = nil
-		blob, err := json.Marshal(&planCopy)
-		if err == nil {
-			ctx, cancel := s.ctx()
-			if err := s.redis.Set(ctx, keyPlan, string(blob)); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: redis set %s: %s\n", keyPlan, err)
-			}
-			cancel()
+		if blob, err := json.Marshal(&planCopy); err == nil {
+			s.writeBlob(keyPlan, string(blob))
 		}
 		s.rewriteHibanaList(plan.Scratch)
 	}
 
 	s.commitAndPush(SyncMsg("update plan"), []string{"plan.yaml"})
 	return nil
+}
+
+// writeBlob pushes a blob key to Redis, bumps its rev counter, and updates the
+// local cache. On failure the op lands in the outbox for replay.
+func (s *Store) writeBlob(key, payload string) {
+	ctx, cancel := s.ctx()
+	defer cancel()
+	if err := s.redis.Set(ctx, key, payload); err != nil {
+		_ = s.outbox.Append(OutboxOp{TS: time.Now(), Op: "set", Key: key, Payload: payload})
+		fmt.Fprintf(os.Stderr, "warn: redis set %s (buffered): %s\n", key, err)
+		return
+	}
+	newRev, err := s.redis.Incr(ctx, revKeyFor(key))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: redis incr %s: %s\n", revKeyFor(key), err)
+		return
+	}
+	_ = s.syncState.SetRev(key, newRev)
 }
 
 // rewriteHibanaList replaces the Redis list with the full current Scratch
@@ -197,11 +219,11 @@ func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
 // LoadPlan/append/SavePlan dance for CLI quick-note entry.
 func (s *Store) AddHibana(note model.ScratchNote) error {
 	if s.RedisEnabled() {
-		b, err := json.Marshal(note)
-		if err == nil {
+		if b, err := json.Marshal(note); err == nil {
 			ctx, cancel := s.ctx()
 			if err := s.redis.RPush(ctx, keyHibana, string(b)); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: redis rpush %s: %s\n", keyHibana, err)
+				_ = s.outbox.Append(OutboxOp{TS: time.Now(), Op: "rpush", Key: keyHibana, Payload: string(b)})
+				fmt.Fprintf(os.Stderr, "warn: redis rpush %s (buffered): %s\n", keyHibana, err)
 			}
 			cancel()
 		}
@@ -225,6 +247,9 @@ func (s *Store) AddHibana(note model.ScratchNote) error {
 
 func (s *Store) LoadAnnotations() (*model.Annotations, error) {
 	s.pull()
+	if s.RedisEnabled() {
+		_, _ = s.Reconcile()
+	}
 
 	if s.RedisEnabled() {
 		ctx, cancel := s.ctx()
@@ -255,11 +280,7 @@ func (s *Store) SaveAnnotations(ann *model.Annotations) error {
 	}
 	if s.RedisEnabled() {
 		if blob, err := json.Marshal(ann); err == nil {
-			ctx, cancel := s.ctx()
-			if err := s.redis.Set(ctx, keyAnnotations, string(blob)); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: redis set %s: %s\n", keyAnnotations, err)
-			}
-			cancel()
+			s.writeBlob(keyAnnotations, string(blob))
 		}
 	}
 	s.commitAndPush(SyncMsg("update annotations"), []string{"annotations.yaml"})
@@ -302,16 +323,51 @@ func (s *Store) Rollover(plan *model.Plan) {
 func (s *Store) usagePath() string { return filepath.Join(s.dir, "usage.log") }
 func (s *Store) recapsDir() string { return filepath.Join(s.dir, "recaps") }
 
+// UsageEntry is the append-only record pushed to tack:usage.
+type UsageEntry struct {
+	TS  time.Time `json:"ts"`
+	Cmd string    `json:"cmd"`
+}
+
 func (s *Store) LogUsage(command string) {
-	f, err := os.OpenFile(s.usagePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	entry := UsageEntry{TS: time.Now(), Cmd: command}
+
+	// Local file mirror (tab-separated, for offline debugging and migration).
+	if f, err := os.OpenFile(s.usagePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "%s\t%s\n", entry.TS.Format(time.RFC3339), command)
+		f.Close()
+	}
+
+	if !s.RedisEnabled() {
+		return
+	}
+	b, err := json.Marshal(entry)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	fmt.Fprintf(f, "%s\t%s\n", time.Now().Format(time.RFC3339), command)
+	ctx, cancel := s.ctx()
+	defer cancel()
+	if err := s.redis.RPush(ctx, keyUsage, string(b)); err != nil {
+		_ = s.outbox.Append(OutboxOp{TS: entry.TS, Op: "rpush", Key: keyUsage, Payload: string(b)})
+	}
 }
 
 func (s *Store) LoadUsageStats() (map[string]int, error) {
+	if s.RedisEnabled() {
+		ctx, cancel := s.ctx()
+		raw, err := s.redis.LRange(ctx, keyUsage, 0, -1)
+		cancel()
+		if err == nil {
+			stats := make(map[string]int)
+			for _, line := range raw {
+				var e UsageEntry
+				if err := json.Unmarshal([]byte(line), &e); err == nil && e.Cmd != "" {
+					stats[e.Cmd]++
+				}
+			}
+			return stats, nil
+		}
+	}
 	data, err := os.ReadFile(s.usagePath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -340,8 +396,69 @@ func (s *Store) SaveRecap(name string, content string) error {
 	if err := os.WriteFile(filepath.Join(s.dir, relPath), []byte(content), 0644); err != nil {
 		return err
 	}
+
+	if s.RedisEnabled() {
+		ctx, cancel := s.ctx()
+		defer cancel()
+		key := recapKey(name)
+		if err := s.redis.Set(ctx, key, content); err != nil {
+			_ = s.outbox.Append(OutboxOp{TS: time.Now(), Op: "set", Key: key, Payload: content})
+		} else {
+			if err := s.redis.SAdd(ctx, keyRecapsIndex, name); err != nil {
+				_ = s.outbox.Append(OutboxOp{TS: time.Now(), Op: "sadd", Key: keyRecapsIndex, Payload: name})
+			}
+		}
+	}
+
 	s.commitAndPush(SyncMsg("save recap "+name), []string{relPath})
 	return nil
+}
+
+// LoadRecap returns the markdown body for a single recap, preferring Redis.
+func (s *Store) LoadRecap(name string) (string, error) {
+	if s.RedisEnabled() {
+		ctx, cancel := s.ctx()
+		val, ok, err := s.redis.Get(ctx, recapKey(name))
+		cancel()
+		if err == nil && ok {
+			return val, nil
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(s.recapsDir(), name+".md"))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// ListRecaps returns the set of recap names, preferring the Redis index.
+func (s *Store) ListRecaps() ([]string, error) {
+	if s.RedisEnabled() {
+		ctx, cancel := s.ctx()
+		members, err := s.redis.SMembers(ctx, keyRecapsIndex)
+		cancel()
+		if err == nil {
+			return members, nil
+		}
+	}
+	entries, err := os.ReadDir(s.recapsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasSuffix(n, ".md") {
+			out = append(out, strings.TrimSuffix(n, ".md"))
+		}
+	}
+	return out, nil
 }
 
 // sync helpers — delegate to the optional Syncer, silently ignoring errors.
