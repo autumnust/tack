@@ -397,7 +397,8 @@ func runMigration(config model.Config, srcDir string, force bool) {
 		fmt.Fprintf(os.Stderr, "Migration failed: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Migration complete: plan=%d, annotations=%d rows, hibana=%d notes\n", res.PlanItems, res.AnnotationRows, res.HibanaNotes)
+	fmt.Printf("Migration complete: plan=%d, annotations=%d rows, hibana=%d notes, usage=%d entries, recaps=%d\n",
+		res.PlanItems, res.AnnotationRows, res.HibanaNotes, res.UsageEntries, res.Recaps)
 }
 
 func findConfig() string {
