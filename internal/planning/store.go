@@ -25,6 +25,12 @@ type Store struct {
 	redis     redisBackend
 	outbox    *outbox
 	syncState *syncState
+
+	// loadedHibanaIDs captures the CreatedAt set of scratch notes observed
+	// at the most recent LoadPlan. It is consulted by rewriteHibanaList to
+	// distinguish "local user deleted this note" from "another device
+	// appended this note while we had the TUI open".
+	loadedHibanaIDs map[time.Time]struct{}
 }
 
 // NewStore creates a store rooted at dir with no Redis backend.
@@ -103,7 +109,19 @@ func (s *Store) LoadPlan() (*model.Plan, error) {
 		// On Redis fetch success, mirror to disk so offline mode stays hydrated.
 		_ = s.saveYAML(s.planPath(), plan)
 	}
+	s.captureHibanaSnapshot(plan.Scratch)
 	return plan, nil
+}
+
+// captureHibanaSnapshot records the set of CreatedAt timestamps present in
+// the just-loaded plan so rewriteHibanaList can later tell local deletes
+// apart from remote additions.
+func (s *Store) captureHibanaSnapshot(notes []model.ScratchNote) {
+	ids := make(map[time.Time]struct{}, len(notes))
+	for _, n := range notes {
+		ids[n.CreatedAt] = struct{}{}
+	}
+	s.loadedHibanaIDs = ids
 }
 
 func (s *Store) loadPlanRedisOrYAML() (*model.Plan, error) {
@@ -204,7 +222,11 @@ func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
 		// Fall through: safer to attempt the rewrite than lose local edits.
 	}
 
-	merged := mergeHibana(notes, remote)
+	// Deletions this session: notes we saw at load but the caller no longer
+	// has. Those must be subtracted from the remote list so they don't come
+	// back when we merge.
+	deletions := s.computeHibanaDeletions(notes)
+	merged := mergeHibana(notes, remote, deletions)
 
 	if err := s.redis.Del(ctx, keyHibana); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: redis del %s: %s\n", keyHibana, err)
@@ -227,9 +249,11 @@ func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
 }
 
 // mergeHibana returns local with any remote entries whose CreatedAt is not
-// already present appended to the end. Order of local is preserved so
-// user-driven reorders still win.
-func mergeHibana(local, remote []model.ScratchNote) []model.ScratchNote {
+// already present appended to the end. Entries whose CreatedAt is in
+// deletions (notes the user removed during this session) are excluded from
+// the remote side so deletes survive the merge. Order of local is preserved
+// so user-driven reorders still win.
+func mergeHibana(local, remote []model.ScratchNote, deletions map[time.Time]struct{}) []model.ScratchNote {
 	seen := make(map[time.Time]struct{}, len(local))
 	for _, n := range local {
 		seen[n.CreatedAt] = struct{}{}
@@ -240,8 +264,30 @@ func mergeHibana(local, remote []model.ScratchNote) []model.ScratchNote {
 		if _, ok := seen[n.CreatedAt]; ok {
 			continue
 		}
+		if _, gone := deletions[n.CreatedAt]; gone {
+			continue
+		}
 		out = append(out, n)
 		seen[n.CreatedAt] = struct{}{}
+	}
+	return out
+}
+
+// computeHibanaDeletions returns CreatedAts present in the load-time snapshot
+// but absent from the current local slice.
+func (s *Store) computeHibanaDeletions(current []model.ScratchNote) map[time.Time]struct{} {
+	if len(s.loadedHibanaIDs) == 0 {
+		return nil
+	}
+	cur := make(map[time.Time]struct{}, len(current))
+	for _, n := range current {
+		cur[n.CreatedAt] = struct{}{}
+	}
+	out := map[time.Time]struct{}{}
+	for id := range s.loadedHibanaIDs {
+		if _, ok := cur[id]; !ok {
+			out[id] = struct{}{}
+		}
 	}
 	return out
 }

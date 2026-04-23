@@ -212,6 +212,47 @@ func TestSaveRecap_WritesRedisAndIndex(t *testing.T) {
 // Ensure the "offline" takeFail sticky helper really re-arms.
 var _ context.Context = context.Background()
 
+// Deletes made this session must survive the merge, even though remote
+// still has them.
+func TestSavePlan_LocalDeletesSurviveMerge(t *testing.T) {
+	s, fb := storeWithFake(t)
+
+	t0 := time.Now().Truncate(time.Second)
+	a := model.ScratchNote{Text: "keep", CreatedAt: t0}
+	b := model.ScratchNote{Text: "delete-me", CreatedAt: t0.Add(time.Second)}
+	c := model.ScratchNote{Text: "remote-added", CreatedAt: t0.Add(5 * time.Second)}
+
+	// Seed remote with a, b, and c (c was appended by another device).
+	for _, n := range []model.ScratchNote{a, b, c} {
+		blob, _ := json.Marshal(n)
+		fb.lists[keyHibana] = append(fb.lists[keyHibana], string(blob))
+	}
+
+	// Simulate the load path: LoadPlan would have captured {a, b} as the
+	// snapshot. (c was added after.) We capture {a, b} manually to model
+	// that state.
+	s.captureHibanaSnapshot([]model.ScratchNote{a, b})
+
+	// User deletes b during the session — local now has only {a}.
+	if err := s.SavePlan(&model.Plan{Scratch: []model.ScratchNote{a}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Expected: a (kept) + c (remote-added) — b is gone.
+	var texts []string
+	for _, raw := range fb.lists[keyHibana] {
+		var n model.ScratchNote
+		_ = json.Unmarshal([]byte(raw), &n)
+		texts = append(texts, n.Text)
+	}
+	if len(texts) != 2 {
+		t.Fatalf("expected 2 entries after merge, got %v", texts)
+	}
+	if texts[0] != "keep" || texts[1] != "remote-added" {
+		t.Errorf("merge result wrong: %v (want keep, remote-added)", texts)
+	}
+}
+
 // SavePlan must not wipe hibana notes another device added since we loaded.
 func TestSavePlan_PreservesRemoteHibanaAppends(t *testing.T) {
 	s, fb := storeWithFake(t)
