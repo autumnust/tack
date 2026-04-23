@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -167,6 +168,16 @@ func (m *PlanViewModel) rebuildFlat() {
 				regular = append(regular, i)
 			}
 		}
+		sort.SliceStable(regular, func(i, j int) bool {
+			a := m.plan.Scratch[regular[i]]
+			b := m.plan.Scratch[regular[j]]
+			return hibanaSortTime(a).After(hibanaSortTime(b))
+		})
+		sort.SliceStable(research, func(i, j int) bool {
+			a := m.plan.Scratch[research[i]]
+			b := m.plan.Scratch[research[j]]
+			return hibanaSortTime(a).After(hibanaSortTime(b))
+		})
 		for _, i := range regular {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
 		}
@@ -835,8 +846,8 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 		Render(fmt.Sprintf("%d", idx+1))
 
 	age := ""
-	if !note.CreatedAt.IsZero() {
-		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(note.CreatedAt)))
+	if ts := hibanaSortTime(note); !ts.IsZero() {
+		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(ts)))
 	}
 
 	// prefix: cursor(2) + lineNo(3) + space(1) = 6
@@ -879,6 +890,13 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 		}
 	}
 	return result
+}
+
+func hibanaSortTime(note model.ScratchNote) time.Time {
+	if !note.UpdatedAt.IsZero() {
+		return note.UpdatedAt
+	}
+	return note.CreatedAt
 }
 
 func (m PlanViewModel) renderMonthlyTargetItem(cursor string, idx int) string {

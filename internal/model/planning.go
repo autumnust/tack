@@ -42,6 +42,7 @@ type TodoItem struct {
 type ScratchNote struct {
 	Text      string    `yaml:"text"`
 	CreatedAt time.Time `yaml:"created_at"`
+	UpdatedAt time.Time `yaml:"updated_at,omitempty"`
 }
 
 // MonthlyTarget is a high-level target for the month.

@@ -229,35 +229,54 @@ func TestPlanView_BubbleTeaLifecycle(t *testing.T) {
 }
 
 func TestHibanaResearchSortedToBottom(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
 	plan := &model.Plan{
 		Scratch: []model.ScratchNote{
-			{Text: "regular note 1"},
-			{Text: "[research]investigate X"},
-			{Text: "regular note 2"},
-			{Text: "[Research]another study"},
+			{Text: "regular note 1", CreatedAt: now.Add(-4 * time.Hour)},
+			{Text: "[research]investigate X", CreatedAt: now.Add(-3 * time.Hour)},
+			{Text: "regular note 2", CreatedAt: now.Add(-1 * time.Hour)},
+			{Text: "[Research]another study", CreatedAt: now.Add(-2 * time.Hour)},
 		},
 	}
 	m := NewPlanViewModel(plan, nil)
 	m.SetSection(sectionHibana)
 
-	// Expected order: regular 1 (idx 0), regular 2 (idx 2), header, research (idx 1), research (idx 3)
+	// Expected order: regular 2 (most recent), regular 1, header, research newest, research oldest.
 	if len(m.flatItems) != 5 {
 		t.Fatalf("expected 5 flat items (2 regular + header + 2 research), got %d", len(m.flatItems))
 	}
-	if m.flatItems[0].focusIdx != 0 {
-		t.Errorf("expected first item to be data idx 0, got %d", m.flatItems[0].focusIdx)
+	if m.flatItems[0].focusIdx != 2 {
+		t.Errorf("expected first item to be data idx 2, got %d", m.flatItems[0].focusIdx)
 	}
-	if m.flatItems[1].focusIdx != 2 {
-		t.Errorf("expected second item to be data idx 2, got %d", m.flatItems[1].focusIdx)
+	if m.flatItems[1].focusIdx != 0 {
+		t.Errorf("expected second item to be data idx 0, got %d", m.flatItems[1].focusIdx)
 	}
 	if !m.flatItems[2].header {
 		t.Error("expected third item to be a header")
 	}
-	if m.flatItems[3].focusIdx != 1 {
-		t.Errorf("expected fourth item to be data idx 1, got %d", m.flatItems[3].focusIdx)
+	if m.flatItems[3].focusIdx != 3 {
+		t.Errorf("expected fourth item to be data idx 3, got %d", m.flatItems[3].focusIdx)
 	}
-	if m.flatItems[4].focusIdx != 3 {
-		t.Errorf("expected fifth item to be data idx 3, got %d", m.flatItems[4].focusIdx)
+	if m.flatItems[4].focusIdx != 1 {
+		t.Errorf("expected fifth item to be data idx 1, got %d", m.flatItems[4].focusIdx)
+	}
+}
+
+func TestHibanaUpdatedItemsSortToTop(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	plan := &model.Plan{
+		Scratch: []model.ScratchNote{
+			{Text: "older but recently edited", CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: now},
+			{Text: "newer but not edited", CreatedAt: now.Add(-1 * time.Hour)},
+		},
+	}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+	if len(m.flatItems) != 2 {
+		t.Fatalf("expected 2 flat items, got %d", len(m.flatItems))
+	}
+	if m.flatItems[0].focusIdx != 0 {
+		t.Fatalf("expected edited note first, got data idx %d", m.flatItems[0].focusIdx)
 	}
 }
 

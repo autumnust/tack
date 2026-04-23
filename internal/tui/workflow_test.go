@@ -680,6 +680,9 @@ func TestHibanaEditorFlow(t *testing.T) {
 	if app.plan.Scratch[0].Text != "updated note\nwith newlines" {
 		t.Errorf("expected updated text, got %q", app.plan.Scratch[0].Text)
 	}
+	if app.planView.flatItems[0].focusIdx != 0 {
+		t.Fatalf("expected edited note to remain first, got focus idx %d", app.planView.flatItems[0].focusIdx)
+	}
 	assertStatus(t, app, "Note updated")
 
 	// Tab navigation to Hibana (WeekFocus -> Today -> Hibana)
@@ -701,6 +704,39 @@ func TestHibanaEditorFlow(t *testing.T) {
 	output := app2.View()
 	if !strings.Contains(output, "existing note") {
 		t.Fatal("note not visible in rendered output")
+	}
+}
+
+func TestHibanaEditMovesRecentlyModifiedToTop(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	old := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "older note", CreatedAt: old},
+		{Text: "newer note", CreatedAt: old.Add(time.Hour)},
+	}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	// Cursor starts on the newest note at the top; move to the older note and edit it.
+	app = sendKeys(t, app, "j")
+	if fi := app.planView.currentFlat(); fi == nil || fi.focusIdx != 0 {
+		t.Fatalf("expected cursor on older note before edit, got %+v", fi)
+	}
+
+	tmpFile := t.TempDir() + "/note.md"
+	os.WriteFile(tmpFile, []byte("older note updated"), 0644)
+	m, _ := app.Update(editorFinishedMsg{tmpPath: tmpFile, section: sectionHibana, idx: 0, subIdx: -1, err: nil})
+	app = m.(AppModel)
+
+	if app.plan.Scratch[0].Text != "older note updated" {
+		t.Fatalf("expected edited note text to update, got %q", app.plan.Scratch[0].Text)
+	}
+	if app.planView.flatItems[0].focusIdx != 0 {
+		t.Fatalf("expected edited note to sort to top, got focus idx %d", app.planView.flatItems[0].focusIdx)
 	}
 }
 
@@ -1122,7 +1158,7 @@ func TestPlanMoveCursorHibanaToToday(t *testing.T) {
 	app = sendCommand(t, app, `hibana "deploy pipeline"`)
 	app = sendCommand(t, app, `hibana "review PR"`)
 
-	// On hibana tab, cursor at item 1
+	// On hibana tab, cursor starts on the most recently modified note.
 	app = sendCommand(t, app, `mv today`)
 	if len(app.plan.Scratch) != 1 {
 		t.Fatalf("expected 1 scratch note after move, got %d", len(app.plan.Scratch))
@@ -1130,8 +1166,8 @@ func TestPlanMoveCursorHibanaToToday(t *testing.T) {
 	if len(app.plan.Today) != 1 {
 		t.Fatalf("expected 1 today item, got %d", len(app.plan.Today))
 	}
-	if app.plan.Today[0].Text != "deploy pipeline" {
-		t.Errorf("expected 'deploy pipeline' in today, got %q", app.plan.Today[0].Text)
+	if app.plan.Today[0].Text != "review PR" {
+		t.Errorf("expected 'review PR' in today, got %q", app.plan.Today[0].Text)
 	}
 	assertStatus(t, app, "Moved to Today")
 }

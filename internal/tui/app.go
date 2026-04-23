@@ -582,13 +582,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case sectionHibana:
 			if msg.idx < 0 {
+				now := time.Now()
 				m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
 					Text:      text,
-					CreatedAt: time.Now(),
+					CreatedAt: now,
+					UpdatedAt: now,
 				})
 				m.statusMsg = "Note added"
 			} else if msg.idx < len(m.plan.Scratch) {
 				m.plan.Scratch[msg.idx].Text = text
+				m.plan.Scratch[msg.idx].UpdatedAt = time.Now()
 				m.statusMsg = "Note updated"
 			}
 		case sectionMonthlyTarget:
@@ -1822,9 +1825,11 @@ func (m AppModel) cmdHibana(args []string) (tea.Model, tea.Cmd) {
 		return m.openEditorForNewHibana()
 	}
 	text := strings.Join(args, " ")
+	now := time.Now()
 	m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
 		Text:      text,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
 	m.planView.SetData(m.plan, m.project)
 	m.planView.SetSection(sectionHibana)
