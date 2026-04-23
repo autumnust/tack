@@ -188,21 +188,33 @@ func (s *Store) writeBlob(key, payload string) {
 }
 
 // rewriteHibanaList replaces the Redis list with the full current Scratch
-// slice. Used on TUI saves where reorder/delete semantics require an
-// authoritative overwrite. The --hibana CLI path uses AddHibana instead, which
-// is append-only and safe against concurrent writes from other devices.
+// slice, merging in any entries another device appended while we were
+// offline or mid-session. Dedup is by CreatedAt (safe under the
+// single-user assumption). Used on TUI saves where reorder/delete
+// semantics require an authoritative overwrite. The --hibana CLI path
+// uses AddHibana instead, which is append-only.
 func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
 	ctx, cancel := s.ctx()
 	defer cancel()
+
+	// Fetch remote so we don't clobber notes other devices added.
+	remote, err := s.fetchHibanaListCtx(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: redis lrange %s: %s\n", keyHibana, err)
+		// Fall through: safer to attempt the rewrite than lose local edits.
+	}
+
+	merged := mergeHibana(notes, remote)
+
 	if err := s.redis.Del(ctx, keyHibana); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: redis del %s: %s\n", keyHibana, err)
 		return
 	}
-	if len(notes) == 0 {
+	if len(merged) == 0 {
 		return
 	}
-	vals := make([]string, 0, len(notes))
-	for _, n := range notes {
+	vals := make([]string, 0, len(merged))
+	for _, n := range merged {
 		b, err := json.Marshal(n)
 		if err != nil {
 			continue
@@ -212,6 +224,42 @@ func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
 	if err := s.redis.RPush(ctx, keyHibana, vals...); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: redis rpush %s: %s\n", keyHibana, err)
 	}
+}
+
+// mergeHibana returns local with any remote entries whose CreatedAt is not
+// already present appended to the end. Order of local is preserved so
+// user-driven reorders still win.
+func mergeHibana(local, remote []model.ScratchNote) []model.ScratchNote {
+	seen := make(map[time.Time]struct{}, len(local))
+	for _, n := range local {
+		seen[n.CreatedAt] = struct{}{}
+	}
+	out := make([]model.ScratchNote, 0, len(local)+len(remote))
+	out = append(out, local...)
+	for _, n := range remote {
+		if _, ok := seen[n.CreatedAt]; ok {
+			continue
+		}
+		out = append(out, n)
+		seen[n.CreatedAt] = struct{}{}
+	}
+	return out
+}
+
+// fetchHibanaListCtx is fetchHibanaList but takes an existing context.
+func (s *Store) fetchHibanaListCtx(ctx context.Context) ([]model.ScratchNote, error) {
+	raw, err := s.redis.LRange(ctx, keyHibana, 0, -1)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.ScratchNote, 0, len(raw))
+	for _, s := range raw {
+		var n model.ScratchNote
+		if err := json.Unmarshal([]byte(s), &n); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 // AddHibana appends a single scratch note using RPUSH (atomic across devices)

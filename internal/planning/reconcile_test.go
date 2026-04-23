@@ -211,3 +211,46 @@ func TestSaveRecap_WritesRedisAndIndex(t *testing.T) {
 
 // Ensure the "offline" takeFail sticky helper really re-arms.
 var _ context.Context = context.Background()
+
+// SavePlan must not wipe hibana notes another device added since we loaded.
+func TestSavePlan_PreservesRemoteHibanaAppends(t *testing.T) {
+	s, fb := storeWithFake(t)
+
+	t0 := time.Now().Truncate(time.Second)
+	local := []model.ScratchNote{
+		{Text: "mine-1", CreatedAt: t0},
+		{Text: "mine-2", CreatedAt: t0.Add(time.Second)},
+	}
+	// Seed Redis as if another device appended two notes after our load.
+	extras := []model.ScratchNote{
+		{Text: "theirs-1", CreatedAt: t0.Add(10 * time.Second)},
+		{Text: "theirs-2", CreatedAt: t0.Add(11 * time.Second)},
+	}
+	all := append([]model.ScratchNote{}, local...)
+	all = append(all, extras...)
+	for _, n := range all {
+		b, _ := json.Marshal(n)
+		fb.lists[keyHibana] = append(fb.lists[keyHibana], string(b))
+	}
+
+	if err := s.SavePlan(&model.Plan{Scratch: local}); err != nil {
+		t.Fatal(err)
+	}
+
+	// After save, remote list must still have all 4 entries, local order first.
+	if got := len(fb.lists[keyHibana]); got != 4 {
+		t.Fatalf("expected 4 merged hibana entries, got %d", got)
+	}
+	var texts []string
+	for _, raw := range fb.lists[keyHibana] {
+		var n model.ScratchNote
+		_ = json.Unmarshal([]byte(raw), &n)
+		texts = append(texts, n.Text)
+	}
+	want := []string{"mine-1", "mine-2", "theirs-1", "theirs-2"}
+	for i, w := range want {
+		if texts[i] != w {
+			t.Errorf("entry %d: got %q want %q (full: %v)", i, texts[i], w, texts)
+		}
+	}
+}
