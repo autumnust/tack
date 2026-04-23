@@ -228,13 +228,23 @@ func TestSavePlan_LocalDeletesSurviveMerge(t *testing.T) {
 		fb.lists[keyHibana] = append(fb.lists[keyHibana], string(blob))
 	}
 
-	// Simulate the load path: LoadPlan would have captured {a, b} as the
-	// snapshot. (c was added after.) We capture {a, b} manually to model
-	// that state.
-	s.captureHibanaSnapshot([]model.ScratchNote{a, b})
+	// LoadPlan should capture only the notes present when this client loaded.
+	initialPlan := &model.Plan{Today: []model.TodoItem{{Text: "cloud"}}}
+	blob, _ := json.Marshal(initialPlan)
+	fb.kv[keyPlan] = string(blob)
+	fb.lists[keyHibana] = fb.lists[keyHibana][:2]
+	loaded, err := s.LoadPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Scratch) != 2 {
+		t.Fatalf("expected initial load to see 2 scratch notes, got %d", len(loaded.Scratch))
+	}
+	extraBlob, _ := json.Marshal(c)
+	fb.lists[keyHibana] = append(fb.lists[keyHibana], string(extraBlob))
 
 	// User deletes b during the session — local now has only {a}.
-	if err := s.SavePlan(&model.Plan{Scratch: []model.ScratchNote{a}}); err != nil {
+	if err := s.SavePlan(&model.Plan{Today: loaded.Today, Scratch: []model.ScratchNote{a}}); err != nil {
 		t.Fatal(err)
 	}
 

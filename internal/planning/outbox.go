@@ -13,7 +13,7 @@ import (
 // yet been delivered) while offline. Ops replay in insertion order.
 type OutboxOp struct {
 	TS      time.Time `json:"ts"`
-	Op      string    `json:"op"`  // set | rpush | sadd | incr
+	Op      string    `json:"op"`  // set | rpush | sadd | incr | replace_list
 	Key     string    `json:"key"` // logical Redis key
 	Payload string    `json:"payload,omitempty"`
 }

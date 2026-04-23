@@ -25,6 +25,7 @@ type fakeBackend struct {
 	counters map[string]int64
 	failNext error
 	sticky   bool
+	hook     func(method, key string) error
 }
 
 func newFakeBackend() *fakeBackend {
@@ -55,6 +56,11 @@ func (f *fakeBackend) Get(_ context.Context, key string) (string, bool, error) {
 	if err := f.takeFail(); err != nil {
 		return "", false, err
 	}
+	if f.hook != nil {
+		if err := f.hook("GET", key); err != nil {
+			return "", false, err
+		}
+	}
 	v, ok := f.kv[key]
 	return v, ok, nil
 }
@@ -65,6 +71,11 @@ func (f *fakeBackend) Set(_ context.Context, key, val string) error {
 	if err := f.takeFail(); err != nil {
 		return err
 	}
+	if f.hook != nil {
+		if err := f.hook("SET", key); err != nil {
+			return err
+		}
+	}
 	f.kv[key] = val
 	return nil
 }
@@ -74,6 +85,11 @@ func (f *fakeBackend) Del(_ context.Context, key string) error {
 	defer f.mu.Unlock()
 	if err := f.takeFail(); err != nil {
 		return err
+	}
+	if f.hook != nil {
+		if err := f.hook("DEL", key); err != nil {
+			return err
+		}
 	}
 	delete(f.kv, key)
 	delete(f.lists, key)
@@ -86,6 +102,11 @@ func (f *fakeBackend) RPush(_ context.Context, key string, vals ...string) error
 	if err := f.takeFail(); err != nil {
 		return err
 	}
+	if f.hook != nil {
+		if err := f.hook("RPUSH", key); err != nil {
+			return err
+		}
+	}
 	f.lists[key] = append(f.lists[key], vals...)
 	return nil
 }
@@ -95,6 +116,11 @@ func (f *fakeBackend) LRange(_ context.Context, key string, start, stop int) ([]
 	defer f.mu.Unlock()
 	if err := f.takeFail(); err != nil {
 		return nil, err
+	}
+	if f.hook != nil {
+		if err := f.hook("LRANGE", key); err != nil {
+			return nil, err
+		}
 	}
 	list := f.lists[key]
 	if stop == -1 || stop >= len(list) {
@@ -114,6 +140,11 @@ func (f *fakeBackend) Incr(_ context.Context, key string) (int64, error) {
 	if err := f.takeFail(); err != nil {
 		return 0, err
 	}
+	if f.hook != nil {
+		if err := f.hook("INCR", key); err != nil {
+			return 0, err
+		}
+	}
 	f.counters[key]++
 	// Mirror into kv so GET tack:*:rev also works if callers use it.
 	f.kv[key] = strconvItoa(f.counters[key])
@@ -125,6 +156,11 @@ func (f *fakeBackend) SAdd(_ context.Context, key string, members ...string) err
 	defer f.mu.Unlock()
 	if err := f.takeFail(); err != nil {
 		return err
+	}
+	if f.hook != nil {
+		if err := f.hook("SADD", key); err != nil {
+			return err
+		}
 	}
 	if f.sets[key] == nil {
 		f.sets[key] = map[string]struct{}{}
@@ -140,6 +176,11 @@ func (f *fakeBackend) SMembers(_ context.Context, key string) ([]string, error) 
 	defer f.mu.Unlock()
 	if err := f.takeFail(); err != nil {
 		return nil, err
+	}
+	if f.hook != nil {
+		if err := f.hook("SMEMBERS", key); err != nil {
+			return nil, err
+		}
 	}
 	s := f.sets[key]
 	out := make([]string, 0, len(s))
@@ -284,6 +325,71 @@ func TestSavePlan_RedisFailureDoesNotError(t *testing.T) {
 	// Local yaml must still exist.
 	if _, err := os.Stat(filepath.Join(s.Dir(), "plan.yaml")); err != nil {
 		t.Errorf("local yaml missing after save: %s", err)
+	}
+}
+
+func TestSavePlan_HibanaRewriteBuffersReplaceOnPartialFailure(t *testing.T) {
+	s, fb := storeWithFake(t)
+
+	t0 := time.Now().Truncate(time.Second)
+	keep := model.ScratchNote{Text: "keep", CreatedAt: t0}
+	drop := model.ScratchNote{Text: "drop", CreatedAt: t0.Add(time.Second)}
+	extra := model.ScratchNote{Text: "extra", CreatedAt: t0.Add(2 * time.Second)}
+	for _, n := range []model.ScratchNote{keep, drop, extra} {
+		b, _ := json.Marshal(n)
+		fb.lists[keyHibana] = append(fb.lists[keyHibana], string(b))
+	}
+	s.captureHibanaSnapshot([]model.ScratchNote{keep, drop})
+
+	failed := false
+	fb.hook = func(method, key string) error {
+		if key == keyHibana && method == "RPUSH" && !failed {
+			failed = true
+			return errors.New("rpush failed after del")
+		}
+		return nil
+	}
+
+	if err := s.SavePlan(&model.Plan{Scratch: []model.ScratchNote{keep}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(fb.lists[keyHibana]); got != 0 {
+		t.Fatalf("expected remote hibana cleared after partial failure, got %d", got)
+	}
+	if s.OutboxPending() != 1 {
+		t.Fatalf("expected buffered replace op, got %d", s.OutboxPending())
+	}
+	ops, err := s.outbox.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 || ops[0].Op != "replace_list" || ops[0].Key != keyHibana {
+		t.Fatalf("expected one hibana replace op, got %+v", ops)
+	}
+
+	fb.hook = nil
+	rep, err := s.Reconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Replayed != 1 {
+		t.Fatalf("expected 1 replayed op, got %+v", rep)
+	}
+	if got := len(fb.lists[keyHibana]); got != 2 {
+		t.Fatalf("expected reconstructed hibana list, got %d", got)
+	}
+	var texts []string
+	for _, raw := range fb.lists[keyHibana] {
+		var n model.ScratchNote
+		_ = json.Unmarshal([]byte(raw), &n)
+		texts = append(texts, n.Text)
+	}
+	want := []string{"keep", "extra"}
+	for i, w := range want {
+		if texts[i] != w {
+			t.Fatalf("entry %d: got %q want %q (full=%v)", i, texts[i], w, texts)
+		}
 	}
 }
 

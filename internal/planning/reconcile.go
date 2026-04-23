@@ -35,8 +35,10 @@ type ReconcileReport struct {
 
 // Reconcile drains the outbox and synchronizes blob keys.
 //
-// For append-only keys (tack:usage, tack:hibana) outbox ops replay in order
-// with no conflict check — the remote list is the superset of all writes.
+// For append-only keys (tack:usage) outbox ops replay in order with no
+// conflict check. tack:hibana is append-only for AddHibana, but SavePlan may
+// buffer an authoritative full-list replacement to preserve delete/reorder
+// semantics after a partial rewrite failure.
 //
 // For blob keys (tack:plan, tack:annotations) and per-file recap keys we
 // compare cached rev vs remote rev:
@@ -72,9 +74,16 @@ func (s *Store) Reconcile() (ReconcileReport, error) {
 	for _, key := range order {
 		keyOps := byKey[key]
 		switch {
-		case key == keyUsage || key == keyHibana:
-			// Append-only replay.
+		case key == keyUsage:
 			if err := s.replayAppendOnly(ctx, keyOps); err != nil {
+				remaining = append(remaining, keyOps...)
+				continue
+			}
+			rep.Pushed = append(rep.Pushed, key)
+			rep.Replayed += len(keyOps)
+
+		case key == keyHibana:
+			if err := s.replayHibana(ctx, keyOps); err != nil {
 				remaining = append(remaining, keyOps...)
 				continue
 			}
@@ -164,6 +173,33 @@ func (s *Store) replayAppendOnly(ctx context.Context, ops []OutboxOp) error {
 		vals = append(vals, op.Payload)
 	}
 	return s.redis.RPush(ctx, key, vals...)
+}
+
+func (s *Store) replayHibana(ctx context.Context, ops []OutboxOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	for i := len(ops) - 1; i >= 0; i-- {
+		if ops[i].Op == "replace_list" {
+			notes, err := decodeScratchNotes(ops[i].Payload)
+			if err != nil {
+				return err
+			}
+			return s.replaceHibanaList(ctx, notes)
+		}
+	}
+	return s.replayAppendOnly(ctx, ops)
+}
+
+func decodeScratchNotes(payload string) ([]model.ScratchNote, error) {
+	if payload == "" {
+		return nil, nil
+	}
+	var notes []model.ScratchNote
+	if err := json.Unmarshal([]byte(payload), &notes); err != nil {
+		return nil, err
+	}
+	return notes, nil
 }
 
 func (s *Store) replayBlobKey(ctx context.Context, key string, ops []OutboxOp) (*Conflict, bool, error) {

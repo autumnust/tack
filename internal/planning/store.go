@@ -228,24 +228,44 @@ func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
 	deletions := s.computeHibanaDeletions(notes)
 	merged := mergeHibana(notes, remote, deletions)
 
+	if err := s.replaceHibanaList(ctx, merged); err != nil {
+		_ = s.bufferHibanaReplace(merged)
+		fmt.Fprintf(os.Stderr, "warn: redis replace %s (buffered): %s\n", keyHibana, err)
+	}
+}
+
+func (s *Store) replaceHibanaList(ctx context.Context, notes []model.ScratchNote) error {
 	if err := s.redis.Del(ctx, keyHibana); err != nil {
-		fmt.Fprintf(os.Stderr, "warn: redis del %s: %s\n", keyHibana, err)
-		return
+		return err
 	}
-	if len(merged) == 0 {
-		return
+	if len(notes) == 0 {
+		return nil
 	}
-	vals := make([]string, 0, len(merged))
-	for _, n := range merged {
+	vals := make([]string, 0, len(notes))
+	for _, n := range notes {
 		b, err := json.Marshal(n)
 		if err != nil {
-			continue
+			return err
 		}
 		vals = append(vals, string(b))
 	}
 	if err := s.redis.RPush(ctx, keyHibana, vals...); err != nil {
-		fmt.Fprintf(os.Stderr, "warn: redis rpush %s: %s\n", keyHibana, err)
+		return err
 	}
+	return nil
+}
+
+func (s *Store) bufferHibanaReplace(notes []model.ScratchNote) error {
+	payload, err := json.Marshal(notes)
+	if err != nil {
+		return err
+	}
+	return s.outbox.Append(OutboxOp{
+		TS:      time.Now(),
+		Op:      "replace_list",
+		Key:     keyHibana,
+		Payload: string(payload),
+	})
 }
 
 // mergeHibana returns local with any remote entries whose CreatedAt is not
