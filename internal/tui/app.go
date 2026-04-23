@@ -67,6 +67,7 @@ type AppModel struct {
 	statusMsg    string
 	err          error
 	confirmQuit  bool
+	confirmPersonNote bool
 
 	// redisTag is a persistent status suffix (e.g. "(redis: on)") rendered
 	// alongside statusMsg so transient messages don't hide the sync state.
@@ -90,6 +91,7 @@ type editorFinishedMsg struct {
 	section planSection // which section was being edited
 	idx     int         // -1 for new item, >=0 for editing existing
 	subIdx  int         // -1 for top-level, >=0 for sub-item (week focus)
+	personLogin string
 	err     error
 }
 
@@ -155,11 +157,13 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 		app.persons = grouping.GroupByPerson(project.Items, config.TeamLogins(), app.currentStrategy(), app.displayNames(), app.focusSets())
 		app.board = NewBoardModel(app.persons)
 		app.board.SetAnnotations(app.annotations)
+		app.refreshBoardPersonNotes()
 		app.loading = false
 		age := time.Since(cached.FetchedAt).Truncate(time.Second)
 		app.statusMsg = fmt.Sprintf("Loaded %d items from cache (%s old)", len(project.Items), age)
 		app.cacheStale = age > cacheTTL
 	}
+	app.refreshBoardPersonNotes()
 
 	app.planView = NewPlanViewModel(app.plan, app.project)
 	if len(startInPlanMode) > 0 && startInPlanMode[0] {
@@ -497,6 +501,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Loaded %d items from %s", len(m.project.Items), m.project.Title)
 		}
 		m.board.SetAnnotations(m.annotations)
+		m.refreshBoardPersonNotes()
 		// Pre-render all detail views in background
 		return m, m.preRenderAll()
 
@@ -527,6 +532,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		text := strings.TrimRight(string(data), "\n")
+		if msg.personLogin != "" {
+			if m.planStore == nil {
+				m.statusMsg = "Person notes unavailable"
+				return m, nil
+			}
+			if err := m.planStore.SavePersonNote(msg.personLogin, text); err != nil {
+				m.statusMsg = fmt.Sprintf("Error saving notes: %s", err)
+				return m, nil
+			}
+			m.refreshBoardPersonNotes()
+			name := m.displayName(msg.personLogin)
+			if text == "" {
+				m.statusMsg = fmt.Sprintf("Cleared notes for %s", name)
+			} else {
+				m.statusMsg = fmt.Sprintf("Updated notes for %s", name)
+			}
+			return m, nil
+		}
 		if text == "" {
 			m.statusMsg = "Empty text, discarded"
 			return m, nil
@@ -599,6 +622,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.confirmPersonNote {
+			m.confirmPersonNote = false
+			switch msg.String() {
+			case "y":
+				return m.openCurrentPersonNoteEditor()
+			default:
+				m.statusMsg = "Cancelled"
+				return m, nil
+			}
+		}
 
 		// Command bar takes priority when active
 		if m.command.IsActive() {
@@ -667,6 +700,14 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "Notes hidden"
 		}
+	case "e":
+		login := m.board.CurrentPerson()
+		if login == "" {
+			m.statusMsg = "No person selected"
+			return m, nil
+		}
+		m.confirmPersonNote = true
+		m.statusMsg = fmt.Sprintf("Edit notes for %s? (y/n)", m.displayName(login))
 	case "enter":
 		result := m.board.ToggleOrSelect()
 		if result != nil {
@@ -971,6 +1012,7 @@ func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
 	target.Status = matchedStatus
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = fmt.Sprintf("Queued: mv #%d → %s (%d pending)", target.Number, matchedStatus, m.ops.Len())
 	return m, nil
 }
@@ -1098,6 +1140,7 @@ func (m AppModel) cmdAssign(args []string) (tea.Model, tea.Cmd) {
 	}
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	displayName := m.config.DisplayName(login)
 	m.statusMsg = fmt.Sprintf("Queued: assign #%d to %s (%d pending)", target.Number, displayName, m.ops.Len())
 	return m, nil
@@ -1118,6 +1161,7 @@ func (m AppModel) cmdFocus(args []string) (tea.Model, tea.Cmd) {
 		m.ops.Push(PendingOp{Kind: OpFocusClear})
 		m.persons = m.regroup()
 		m.board.SetPersons(m.persons)
+		m.refreshBoardPersonNotes()
 		m.statusMsg = fmt.Sprintf("Focus cleared (%d pending)", m.ops.Len())
 		return m, nil
 
@@ -1151,6 +1195,7 @@ func (m AppModel) cmdFocus(args []string) (tea.Model, tea.Cmd) {
 		m.ops.Push(PendingOp{Kind: OpFocusAdd, FocusTarget: "@" + name, FocusNumber: num})
 		m.persons = m.regroup()
 		m.board.SetPersons(m.persons)
+		m.refreshBoardPersonNotes()
 		m.statusMsg = fmt.Sprintf("Added focus %d for %s (%d pending)", num, name, m.ops.Len())
 		return m, nil
 	}
@@ -1167,6 +1212,7 @@ func (m AppModel) cmdFocus(args []string) (tea.Model, tea.Cmd) {
 	m.ops.Push(PendingOp{Kind: OpFocusAdd, FocusNumber: num})
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = fmt.Sprintf("Added global focus %d (%d pending)", num, m.ops.Len())
 	return m, nil
 }
@@ -1198,6 +1244,7 @@ func (m AppModel) cmdUnfocus(args []string) (tea.Model, tea.Cmd) {
 		m.ops.Push(PendingOp{Kind: OpFocusRemove, FocusTarget: "@" + name, FocusNumber: num})
 		m.persons = m.regroup()
 		m.board.SetPersons(m.persons)
+		m.refreshBoardPersonNotes()
 		m.statusMsg = fmt.Sprintf("Removed focus %d for %s (%d pending)", num, name, m.ops.Len())
 		return m, nil
 	}
@@ -1211,6 +1258,7 @@ func (m AppModel) cmdUnfocus(args []string) (tea.Model, tea.Cmd) {
 	m.ops.Push(PendingOp{Kind: OpFocusRemove, FocusNumber: num})
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = fmt.Sprintf("Removed global focus %d (%d pending)", num, m.ops.Len())
 	return m, nil
 }
@@ -1244,6 +1292,7 @@ func (m AppModel) cmdAddMember(args []string) (tea.Model, tea.Cmd) {
 	m.config.Team = append(m.config.Team, model.TeamMember{Login: login, Name: login})
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = fmt.Sprintf("Added %s to team view", login)
 	return m, nil
 }
@@ -1272,6 +1321,7 @@ func (m AppModel) cmdRemoveMember(args []string) (tea.Model, tea.Cmd) {
 	m.config.Team = newTeam
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = fmt.Sprintf("Removed %s from team view", login)
 	return m, nil
 }
@@ -1293,6 +1343,7 @@ func (m AppModel) cmdGroup(args []string) (tea.Model, tea.Cmd) {
 	}
 	m.persons = m.regroup()
 	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = fmt.Sprintf("Grouping by: %s", m.strategy.Name())
 	return m, nil
 }
@@ -1314,6 +1365,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("j / Down") + "Move cursor down",
 		"  " + key("k / Up") + "Move cursor up",
 		"  " + key("Enter") + "Expand/collapse epic, or drill into issue",
+		"  " + key("e") + "Edit notes for current person",
 		"  " + key("n") + "Toggle private notes on board",
 		"  " + key("Esc") + "Back (detail -> board, or cancel command)",
 		"",
@@ -1516,6 +1568,7 @@ func (m AppModel) cmdSwitchToPlan() (tea.Model, tea.Cmd) {
 func (m AppModel) cmdSwitchToBoard() (tea.Model, tea.Cmd) {
 	m.purgeDoneFocusItems()
 	m.view = viewBoard
+	m.refreshBoardPersonNotes()
 	m.statusMsg = "Standup mode"
 	return m, nil
 }
@@ -1868,7 +1921,10 @@ func (m AppModel) openEditorForNewHibana() (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) launchEditor(text string, section planSection, idx, subIdx int) (tea.Model, tea.Cmd) {
-	editor := os.Getenv("EDITOR")
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
 	if editor == "" {
 		editor = "vim"
 	}
@@ -1888,6 +1944,91 @@ func (m AppModel) launchEditor(text string, section planSection, idx, subIdx int
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{tmpPath: tmpFile, section: section, idx: idx, subIdx: subIdx, err: err}
 	})
+}
+
+func (m AppModel) openCurrentPersonNoteEditor() (tea.Model, tea.Cmd) {
+	if m.planStore == nil {
+		m.statusMsg = "Person notes unavailable"
+		return m, nil
+	}
+	login := m.board.CurrentPerson()
+	if login == "" {
+		m.statusMsg = "No person selected"
+		return m, nil
+	}
+	text, err := m.planStore.LoadPersonNote(login)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error loading notes: %s", err)
+		return m, nil
+	}
+	text = m.preparePersonNoteBody(login, text)
+	return m.launchPersonNoteEditor(login, text)
+}
+
+func (m AppModel) launchPersonNoteEditor(login, text string) (tea.Model, tea.Cmd) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vim"
+	}
+
+	f, err := os.CreateTemp("", "tack-person-note-*.md")
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating temp file: %s", err)
+		return m, nil
+	}
+	tmpFile := f.Name()
+	if text != "" {
+		_, _ = f.WriteString(text)
+	}
+	_ = f.Close()
+
+	c := exec.Command(editor, tmpFile)
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{tmpPath: tmpFile, personLogin: login, err: err}
+	})
+}
+
+func (m AppModel) defaultPersonNoteTemplate(login string) string {
+	return fmt.Sprintf("# %s\n\n## %s\n\n", m.displayName(login), time.Now().Format("2006-01-02"))
+}
+
+func (m AppModel) preparePersonNoteBody(login, existing string) string {
+	todayHeading := "## " + time.Now().Format("2006-01-02")
+	if existing == "" {
+		return m.defaultPersonNoteTemplate(login)
+	}
+	if strings.Contains(existing, todayHeading) {
+		return existing
+	}
+
+	header := "# " + m.displayName(login)
+	if strings.HasPrefix(existing, header) {
+		rest := strings.TrimPrefix(existing, header)
+		rest = strings.TrimLeft(rest, "\n")
+		if rest == "" {
+			return header + "\n\n" + todayHeading + "\n\n"
+		}
+		return header + "\n\n" + todayHeading + "\n\n" + rest
+	}
+
+	return header + "\n\n" + todayHeading + "\n\n" + existing
+}
+
+func (m *AppModel) refreshBoardPersonNotes() {
+	presence := map[string]bool{}
+	if m.planStore != nil {
+		for _, p := range m.persons {
+			presence[p.Login] = m.planStore.HasPersonNote(p.Login)
+		}
+	}
+	m.board.SetPersonNotes(presence)
+}
+
+func (m AppModel) displayName(login string) string {
+	return m.config.DisplayName(login)
 }
 
 func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {

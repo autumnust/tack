@@ -34,12 +34,14 @@ type BoardModel struct {
 	viewHeight   int
 	showNotes    bool               // toggle private annotations
 	annotations  *model.Annotations // reference to annotations data
+	personNotes  map[string]bool
 }
 
 func NewBoardModel(persons []model.PersonGroup) BoardModel {
 	b := BoardModel{
-		persons:  persons,
-		expanded: make(map[string]bool),
+		persons:     persons,
+		expanded:    make(map[string]bool),
+		personNotes: make(map[string]bool),
 	}
 	// Expand all epics by default
 	for pi, p := range persons {
@@ -67,6 +69,10 @@ func (b *BoardModel) ToggleNotes() {
 
 func (b *BoardModel) ShowingNotes() bool {
 	return b.showNotes
+}
+
+func (b *BoardModel) SetPersonNotes(presence map[string]bool) {
+	b.personNotes = presence
 }
 
 func (b *BoardModel) SetPersons(persons []model.PersonGroup) {
@@ -231,6 +237,17 @@ func (b *BoardModel) CurrentPerson() string {
 	return ""
 }
 
+func (b *BoardModel) CurrentPersonDisplayName() string {
+	if b.personIdx < len(b.persons) {
+		p := b.persons[b.personIdx]
+		if p.DisplayName != "" {
+			return p.DisplayName
+		}
+		return p.Login
+	}
+	return ""
+}
+
 func (b *BoardModel) View(width, height int) string {
 	b.viewHeight = height - 4 // reserve for header + footer
 
@@ -248,6 +265,9 @@ func (b *BoardModel) View(width, height int) string {
 			name = p.Login
 		}
 		label := fmt.Sprintf("%s (%d)", name, issueCount)
+		if b.personNotes[p.Login] {
+			label += " ✎"
+		}
 		if i == b.personIdx {
 			tabs = append(tabs, activeTabStyle.Render(label))
 		} else {

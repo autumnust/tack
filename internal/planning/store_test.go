@@ -240,3 +240,48 @@ func TestLoadUsageStats_MissingFile(t *testing.T) {
 		t.Error("expected empty stats from missing file")
 	}
 }
+
+func TestPersonNote_RoundTrip(t *testing.T) {
+	s := tempStore(t)
+
+	if got, err := s.LoadPersonNote("alice"); err != nil {
+		t.Fatal(err)
+	} else if got != "" {
+		t.Fatalf("expected empty missing note, got %q", got)
+	}
+
+	body := "# Alice\n\n## 2026-04-23\n- discussed priorities\n"
+	if err := s.SavePersonNote("alice", body); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadPersonNote("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != body {
+		t.Fatalf("expected %q, got %q", body, got)
+	}
+	if !s.HasPersonNote("alice") {
+		t.Fatal("expected note existence after save")
+	}
+}
+
+func TestPersonNote_SaveEmptyRemovesFile(t *testing.T) {
+	s := tempStore(t)
+	if err := s.SavePersonNote("alice", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePersonNote("alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasPersonNote("alice") {
+		t.Fatal("expected empty save to clear note file")
+	}
+	got, err := s.LoadPersonNote("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("expected cleared note body, got %q", got)
+	}
+}

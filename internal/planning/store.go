@@ -436,6 +436,11 @@ func (s *Store) Rollover(plan *model.Plan) {
 
 func (s *Store) usagePath() string { return filepath.Join(s.dir, "usage.log") }
 func (s *Store) recapsDir() string { return filepath.Join(s.dir, "recaps") }
+func (s *Store) personNotesDir() string { return filepath.Join(s.dir, "person-notes") }
+func (s *Store) personNotePath(login string) string {
+	name := strings.ReplaceAll(login, string(os.PathSeparator), "_")
+	return filepath.Join(s.personNotesDir(), name+".md")
+}
 
 // UsageEntry is the append-only record pushed to tack:usage.
 type UsageEntry struct {
@@ -573,6 +578,42 @@ func (s *Store) ListRecaps() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func (s *Store) LoadPersonNote(login string) (string, error) {
+	data, err := os.ReadFile(s.personNotePath(login))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (s *Store) SavePersonNote(login, body string) error {
+	path := s.personNotePath(login)
+	relPath := filepath.Join("person-notes", filepath.Base(path))
+	if body == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		s.commitAndPush(SyncMsg("clear notes for "+login), []string{relPath})
+		return nil
+	}
+	if err := os.MkdirAll(s.personNotesDir(), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		return err
+	}
+	s.commitAndPush(SyncMsg("save notes for "+login), []string{relPath})
+	return nil
+}
+
+func (s *Store) HasPersonNote(login string) bool {
+	info, err := os.Stat(s.personNotePath(login))
+	return err == nil && info.Size() > 0
 }
 
 // sync helpers — delegate to the optional Syncer, silently ignoring errors.

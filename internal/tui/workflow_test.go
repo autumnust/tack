@@ -90,6 +90,7 @@ func newTestApp() AppModel {
 	app.project = testProject()
 	app.persons = app.regroup()
 	app.board = NewBoardModel(app.persons)
+	app.refreshBoardPersonNotes()
 	app.loading = false
 	app.statusMsg = "Test loaded"
 
@@ -713,6 +714,7 @@ func newTestAppWithStore(t *testing.T) AppModel {
 		t.Fatal(err)
 	}
 	app.planStore = store
+	app.refreshBoardPersonNotes()
 	return app
 }
 
@@ -1468,6 +1470,80 @@ func TestBoardSelectedTargetFromBoard(t *testing.T) {
 	target := app.selectedTarget()
 	if target == nil {
 		t.Fatal("expected selectedTarget to return an issue from board cursor")
+	}
+}
+
+func TestBoardPersonNoteConfirmCancel(t *testing.T) {
+	app := newTestAppWithStore(t)
+
+	app = sendKeys(t, app, "e")
+	assertStatus(t, app, "Edit notes for Alice? (y/n)")
+
+	app = sendKeys(t, app, "n")
+	if app.confirmPersonNote {
+		t.Fatal("expected person-note confirm state to clear")
+	}
+	assertStatus(t, app, "Cancelled")
+}
+
+func TestBoardPersonNoteEditFlow(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.width = 120
+	app.height = 40
+
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	app = m.(AppModel)
+	if cmd != nil {
+		t.Fatal("expected no editor launch before confirmation")
+	}
+	assertStatus(t, app, "Edit notes for Alice? (y/n)")
+
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	app = m.(AppModel)
+	if cmd == nil {
+		t.Fatal("expected editor launch after y confirmation")
+	}
+
+	tmpFile := t.TempDir() + "/alice.md"
+	os.WriteFile(tmpFile, []byte("# Alice\n\n## 2026-04-23\n- discussed ownership\n"), 0644)
+	m, _ = app.Update(editorFinishedMsg{tmpPath: tmpFile, section: sectionWeekFocus, idx: -1, subIdx: -1, personLogin: "alice", err: nil})
+	app = m.(AppModel)
+
+	body, err := app.planStore.LoadPersonNote("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "discussed ownership") {
+		t.Fatalf("expected saved person note, got %q", body)
+	}
+	assertStatus(t, app, "Updated notes for Alice")
+
+	output := app.View()
+	if !strings.Contains(output, "✎") {
+		t.Fatalf("expected board to show note indicator, got %q", output)
+	}
+}
+
+func TestPreparePersonNoteBody_InsertsTodayUnderNameOnce(t *testing.T) {
+	app := newTestAppWithStore(t)
+	today := time.Now().Format("2006-01-02")
+
+	got := app.preparePersonNoteBody("alice", "")
+	if !strings.HasPrefix(got, "# Alice\n\n## "+today) {
+		t.Fatalf("expected empty note template to start with name then today, got %q", got)
+	}
+
+	existing := "# Alice\n\n## 2026-04-22\n- prior note\n"
+	got = app.preparePersonNoteBody("alice", existing)
+	wantPrefix := "# Alice\n\n## " + today + "\n\n## 2026-04-22\n"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("expected today section inserted under name, got %q", got)
+	}
+
+	existingToday := "# Alice\n\n## " + today + "\n- already here\n\n## 2026-04-22\n- prior\n"
+	got = app.preparePersonNoteBody("alice", existingToday)
+	if got != existingToday {
+		t.Fatalf("expected existing today section to remain unchanged, got %q", got)
 	}
 }
 
