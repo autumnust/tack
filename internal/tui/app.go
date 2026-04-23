@@ -67,6 +67,10 @@ type AppModel struct {
 	statusMsg    string
 	err          error
 	confirmQuit  bool
+
+	// redisTag is a persistent status suffix (e.g. "(redis: on)") rendered
+	// alongside statusMsg so transient messages don't hide the sync state.
+	redisTag string
 }
 
 // Messages
@@ -166,15 +170,14 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	// glance whether cross-device sync is active.
 	if app.planStore != nil {
 		if app.planStore.RedisEnabled() {
-			suffix := "(redis: on)"
+			app.redisTag = "(redis: on)"
 			if n, _ := app.planStore.LoadConflicts(); len(n) > 0 {
-				suffix = fmt.Sprintf("(redis: on, %d conflicts — exit and run `tack --resolve-conflicts`)", len(n))
+				app.redisTag = fmt.Sprintf("(redis: on, %d conflicts — exit and run `tack --resolve-conflicts`)", len(n))
 			} else if p := app.planStore.OutboxPending(); p > 0 {
-				suffix = fmt.Sprintf("(redis: on, %d pending)", p)
+				app.redisTag = fmt.Sprintf("(redis: on, %d pending)", p)
 			}
-			app.statusMsg = strings.TrimSpace(app.statusMsg + "  " + suffix)
 		} else {
-			app.statusMsg = strings.TrimSpace(app.statusMsg + "  (redis: off — local only)")
+			app.redisTag = "(redis: off — local only)"
 		}
 	}
 
@@ -2370,8 +2373,16 @@ func (m AppModel) View() string {
 		content = m.planView.View(m.width, m.height)
 	}
 
-	// Status bar
-	statusLeft := statusBarStyle.Render(m.statusMsg)
+	// Status bar. redisTag is a persistent suffix so transient statusMsg
+	// overwrites don't hide whether cross-device sync is live.
+	statusText := m.statusMsg
+	if m.redisTag != "" {
+		if statusText != "" {
+			statusText += "  "
+		}
+		statusText += m.redisTag
+	}
+	statusLeft := statusBarStyle.Render(statusText)
 	var viewHint string
 	switch m.view {
 	case viewDetail:
