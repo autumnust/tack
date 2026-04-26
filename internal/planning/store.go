@@ -25,12 +25,6 @@ type Store struct {
 	redis     redisBackend
 	outbox    *outbox
 	syncState *syncState
-
-	// loadedHibanaIDs captures the CreatedAt set of scratch notes observed
-	// at the most recent LoadPlan. It is consulted by rewriteHibanaList to
-	// distinguish "local user deleted this note" from "another device
-	// appended this note while we had the TUI open".
-	loadedHibanaIDs map[time.Time]struct{}
 }
 
 // NewStore creates a store rooted at dir with no Redis backend.
@@ -88,9 +82,10 @@ func (s *Store) ctx() (context.Context, context.CancelFunc) {
 
 // Plan
 
-// LoadPlan returns the plan from Redis (when configured and present) falling
-// back to the local YAML. Scratch notes always come from the tack:hibana list
-// when Redis is enabled.
+// LoadPlan returns the plan from Redis (when configured and present)
+// falling back to the local YAML. Scratch notes are NOT populated here
+// anymore — the hibana package owns that field; callers should overwrite
+// plan.Scratch with hibana.Store.List() after this returns.
 func (s *Store) LoadPlan() (*model.Plan, error) {
 	s.pull()
 	if s.RedisEnabled() {
@@ -102,26 +97,9 @@ func (s *Store) LoadPlan() (*model.Plan, error) {
 		return nil, err
 	}
 
-	if s.RedisEnabled() {
-		if notes, err := s.fetchHibanaList(); err == nil && notes != nil {
-			plan.Scratch = notes
-		}
-		// On Redis fetch success, mirror to disk so offline mode stays hydrated.
-		_ = s.saveYAML(s.planPath(), plan)
-	}
-	s.captureHibanaSnapshot(plan.Scratch)
+	// Wipe any stale scratch from old YAMLs/blobs so callers don't see it.
+	plan.Scratch = nil
 	return plan, nil
-}
-
-// captureHibanaSnapshot records the set of CreatedAt timestamps present in
-// the just-loaded plan so rewriteHibanaList can later tell local deletes
-// apart from remote additions.
-func (s *Store) captureHibanaSnapshot(notes []model.ScratchNote) {
-	ids := make(map[time.Time]struct{}, len(notes))
-	for _, n := range notes {
-		ids[n.CreatedAt] = struct{}{}
-	}
-	s.loadedHibanaIDs = ids
 }
 
 func (s *Store) loadPlanRedisOrYAML() (*model.Plan, error) {
@@ -146,41 +124,24 @@ func (s *Store) loadPlanRedisOrYAML() (*model.Plan, error) {
 	return &plan, nil
 }
 
-func (s *Store) fetchHibanaList() ([]model.ScratchNote, error) {
-	ctx, cancel := s.ctx()
-	defer cancel()
-	raw, err := s.redis.LRange(ctx, keyHibana, 0, -1)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]model.ScratchNote, 0, len(raw))
-	for _, s := range raw {
-		var n model.ScratchNote
-		if err := json.Unmarshal([]byte(s), &n); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out, nil
-}
-
 // SavePlan writes the plan everywhere it belongs:
 //   - local YAML (always, for offline reads and git sync)
-//   - Redis tack:plan (without Scratch — that's the list's job) + rev bump
-//   - Redis tack:hibana (full rewrite via DEL + RPUSH)
+//   - Redis tack:plan (without Scratch — owned by the hibana package now) + rev bump
 //
 // Redis failures route the write into the local outbox for later replay.
 func (s *Store) SavePlan(plan *model.Plan) error {
-	if err := s.saveYAML(s.planPath(), plan); err != nil {
+	// Hibana owns scratch. Strip it from the plan before persisting so we
+	// don't double-write or drift between sources of truth.
+	planCopy := *plan
+	planCopy.Scratch = nil
+	if err := s.saveYAML(s.planPath(), &planCopy); err != nil {
 		return err
 	}
 
 	if s.RedisEnabled() {
-		planCopy := *plan
-		planCopy.Scratch = nil
 		if blob, err := json.Marshal(&planCopy); err == nil {
 			s.writeBlob(keyPlan, string(blob))
 		}
-		s.rewriteHibanaList(plan.Scratch)
 	}
 
 	s.commitAndPush(SyncMsg("update plan"), []string{"plan.yaml"})
@@ -203,158 +164,6 @@ func (s *Store) writeBlob(key, payload string) {
 		return
 	}
 	_ = s.syncState.SetRev(key, newRev)
-}
-
-// rewriteHibanaList replaces the Redis list with the full current Scratch
-// slice, merging in any entries another device appended while we were
-// offline or mid-session. Dedup is by CreatedAt (safe under the
-// single-user assumption). Used on TUI saves where reorder/delete
-// semantics require an authoritative overwrite. The --hibana CLI path
-// uses AddHibana instead, which is append-only.
-func (s *Store) rewriteHibanaList(notes []model.ScratchNote) {
-	ctx, cancel := s.ctx()
-	defer cancel()
-
-	// Fetch remote so we don't clobber notes other devices added.
-	remote, err := s.fetchHibanaListCtx(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warn: redis lrange %s: %s\n", keyHibana, err)
-		// Fall through: safer to attempt the rewrite than lose local edits.
-	}
-
-	// Deletions this session: notes we saw at load but the caller no longer
-	// has. Those must be subtracted from the remote list so they don't come
-	// back when we merge.
-	deletions := s.computeHibanaDeletions(notes)
-	merged := mergeHibana(notes, remote, deletions)
-
-	if err := s.replaceHibanaList(ctx, merged); err != nil {
-		_ = s.bufferHibanaReplace(merged)
-		fmt.Fprintf(os.Stderr, "warn: redis replace %s (buffered): %s\n", keyHibana, err)
-	}
-}
-
-func (s *Store) replaceHibanaList(ctx context.Context, notes []model.ScratchNote) error {
-	if err := s.redis.Del(ctx, keyHibana); err != nil {
-		return err
-	}
-	if len(notes) == 0 {
-		return nil
-	}
-	vals := make([]string, 0, len(notes))
-	for _, n := range notes {
-		b, err := json.Marshal(n)
-		if err != nil {
-			return err
-		}
-		vals = append(vals, string(b))
-	}
-	if err := s.redis.RPush(ctx, keyHibana, vals...); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Store) bufferHibanaReplace(notes []model.ScratchNote) error {
-	payload, err := json.Marshal(notes)
-	if err != nil {
-		return err
-	}
-	return s.outbox.Append(OutboxOp{
-		TS:      time.Now(),
-		Op:      "replace_list",
-		Key:     keyHibana,
-		Payload: string(payload),
-	})
-}
-
-// mergeHibana returns local with any remote entries whose CreatedAt is not
-// already present appended to the end. Entries whose CreatedAt is in
-// deletions (notes the user removed during this session) are excluded from
-// the remote side so deletes survive the merge. Order of local is preserved
-// so user-driven reorders still win.
-func mergeHibana(local, remote []model.ScratchNote, deletions map[time.Time]struct{}) []model.ScratchNote {
-	seen := make(map[time.Time]struct{}, len(local))
-	for _, n := range local {
-		seen[n.CreatedAt] = struct{}{}
-	}
-	out := make([]model.ScratchNote, 0, len(local)+len(remote))
-	out = append(out, local...)
-	for _, n := range remote {
-		if _, ok := seen[n.CreatedAt]; ok {
-			continue
-		}
-		if _, gone := deletions[n.CreatedAt]; gone {
-			continue
-		}
-		out = append(out, n)
-		seen[n.CreatedAt] = struct{}{}
-	}
-	return out
-}
-
-// computeHibanaDeletions returns CreatedAts present in the load-time snapshot
-// but absent from the current local slice.
-func (s *Store) computeHibanaDeletions(current []model.ScratchNote) map[time.Time]struct{} {
-	if len(s.loadedHibanaIDs) == 0 {
-		return nil
-	}
-	cur := make(map[time.Time]struct{}, len(current))
-	for _, n := range current {
-		cur[n.CreatedAt] = struct{}{}
-	}
-	out := map[time.Time]struct{}{}
-	for id := range s.loadedHibanaIDs {
-		if _, ok := cur[id]; !ok {
-			out[id] = struct{}{}
-		}
-	}
-	return out
-}
-
-// fetchHibanaListCtx is fetchHibanaList but takes an existing context.
-func (s *Store) fetchHibanaListCtx(ctx context.Context) ([]model.ScratchNote, error) {
-	raw, err := s.redis.LRange(ctx, keyHibana, 0, -1)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]model.ScratchNote, 0, len(raw))
-	for _, s := range raw {
-		var n model.ScratchNote
-		if err := json.Unmarshal([]byte(s), &n); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out, nil
-}
-
-// AddHibana appends a single scratch note using RPUSH (atomic across devices)
-// and mirrors the append to the local plan.yaml. Prefer this over the
-// LoadPlan/append/SavePlan dance for CLI quick-note entry.
-func (s *Store) AddHibana(note model.ScratchNote) error {
-	if s.RedisEnabled() {
-		if b, err := json.Marshal(note); err == nil {
-			ctx, cancel := s.ctx()
-			if err := s.redis.RPush(ctx, keyHibana, string(b)); err != nil {
-				_ = s.outbox.Append(OutboxOp{TS: time.Now(), Op: "rpush", Key: keyHibana, Payload: string(b)})
-				fmt.Fprintf(os.Stderr, "warn: redis rpush %s (buffered): %s\n", keyHibana, err)
-			}
-			cancel()
-		}
-	}
-
-	// Mirror to local YAML so offline reads still see the note. We load from
-	// disk (not Redis) to avoid the round-trip cost on the hot path.
-	var plan model.Plan
-	if err := s.loadYAML(s.planPath(), &plan); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	plan.Scratch = append(plan.Scratch, note)
-	if err := s.saveYAML(s.planPath(), &plan); err != nil {
-		return err
-	}
-	s.commitAndPush(SyncMsg("hibana"), []string{"plan.yaml"})
-	return nil
 }
 
 // Annotations

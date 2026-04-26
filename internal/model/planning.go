@@ -38,8 +38,12 @@ type TodoItem struct {
 	DoneAt    time.Time `yaml:"done_at,omitempty"`
 }
 
-// ScratchNote is a freeform note.
+// ScratchNote is a freeform note. Id is the hibana NoteID; it's empty for
+// notes loaded from legacy plan.yaml that haven't yet been migrated, in
+// which case the TUI shouldn't allow edit/delete operations on them
+// (they'll vanish on next plan save).
 type ScratchNote struct {
+	Id        string    `yaml:"id,omitempty"`
 	Text      string    `yaml:"text"`
 	CreatedAt time.Time `yaml:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at,omitempty"`

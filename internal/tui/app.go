@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/autumnust/tack/internal/cache"
 	"github.com/autumnust/tack/internal/github"
 	"github.com/autumnust/tack/internal/grouping"
+	"github.com/autumnust/tack/internal/hibana"
 	"github.com/autumnust/tack/internal/model"
 	"github.com/autumnust/tack/internal/planning"
 )
@@ -45,6 +47,7 @@ type AppModel struct {
 
 	// Planning
 	planStore   *planning.Store
+	hibanaStore *hibana.Store
 	plan        *model.Plan
 	annotations *model.Annotations
 
@@ -146,6 +149,25 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	} else {
 		app.plan = &model.Plan{}
 		app.annotations = &model.Annotations{}
+	}
+
+	// Hibana lives in the same directory as planning, on its own append-only
+	// log. Sync runs best-effort on entry so the TUI shows the union of
+	// local and remote notes.
+	hibanaBackend := hibana.NopBackend()
+	if redisURL != "" && redisToken != "" {
+		hibanaBackend = hibana.NewRESTBackend(redisURL, redisToken)
+	}
+	if hs, err := hibana.Open(planDir, hibanaBackend); err == nil {
+		app.hibanaStore = hs
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = hs.Sync(ctx) // errors are surfaced in the status line, not blocking
+		cancel()
+		// Hibana is the source of truth for scratch notes. Override
+		// whatever LoadPlan put in plan.Scratch.
+		if notes, err := hs.List(); err == nil {
+			app.plan.Scratch = notesToScratch(notes)
+		}
 	}
 
 	// Load cache synchronously — no loading flash
@@ -582,17 +604,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case sectionHibana:
 			if msg.idx < 0 {
-				now := time.Now()
-				m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
-					Text:      text,
-					CreatedAt: now,
-					UpdatedAt: now,
-				})
-				m.statusMsg = "Note added"
+				if n, err := m.scratchAdd(text); err == nil {
+					m.plan.Scratch = append(m.plan.Scratch, n)
+					m.statusMsg = "Note added"
+				} else {
+					m.statusMsg = "Note save failed: " + err.Error()
+				}
 			} else if msg.idx < len(m.plan.Scratch) {
-				m.plan.Scratch[msg.idx].Text = text
-				m.plan.Scratch[msg.idx].UpdatedAt = time.Now()
-				m.statusMsg = "Note updated"
+				updated, err := m.scratchEdit(m.plan.Scratch[msg.idx], text)
+				if err == nil {
+					m.plan.Scratch[msg.idx] = updated
+					m.statusMsg = "Note updated"
+				} else {
+					m.statusMsg = "Note edit failed: " + err.Error()
+				}
 			}
 		case sectionMonthlyTarget:
 			if msg.idx < 0 {
@@ -1825,16 +1850,15 @@ func (m AppModel) cmdHibana(args []string) (tea.Model, tea.Cmd) {
 		return m.openEditorForNewHibana()
 	}
 	text := strings.Join(args, " ")
-	now := time.Now()
-	m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{
-		Text:      text,
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	if n, err := m.scratchAdd(text); err == nil {
+		m.plan.Scratch = append(m.plan.Scratch, n)
+		m.statusMsg = "Note added"
+	} else {
+		m.statusMsg = "Note save failed: " + err.Error()
+	}
 	m.planView.SetData(m.plan, m.project)
 	m.planView.SetSection(sectionHibana)
 	m.view = viewPlan
-	m.statusMsg = "Note added"
 	return m, nil
 }
 
@@ -2327,6 +2351,7 @@ func (m AppModel) cmdPlanMove(args []string) (tea.Model, tea.Cmd) {
 		case sectionHibana:
 			if idx < len(m.plan.Scratch) {
 				srcText = m.plan.Scratch[idx].Text
+				_ = m.scratchDelete(m.plan.Scratch[idx])
 				m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
 			}
 		case sectionMonthlyTarget:
@@ -2356,6 +2381,7 @@ func (m AppModel) cmdPlanMove(args []string) (tea.Model, tea.Cmd) {
 			m.plan.Today = append(m.plan.Today[:fi.focusIdx], m.plan.Today[fi.focusIdx+1:]...)
 		case sectionHibana:
 			srcText = m.plan.Scratch[fi.focusIdx].Text
+			_ = m.scratchDelete(m.plan.Scratch[fi.focusIdx])
 			m.plan.Scratch = append(m.plan.Scratch[:fi.focusIdx], m.plan.Scratch[fi.focusIdx+1:]...)
 		case sectionMonthlyTarget:
 			srcText = m.plan.MonthlyTargets[fi.focusIdx].Text
@@ -2386,7 +2412,9 @@ func (m AppModel) cmdPlanMove(args []string) (tea.Model, tea.Cmd) {
 	case sectionToday:
 		m.plan.Today = append(m.plan.Today, model.TodoItem{Text: srcText, CreatedAt: time.Now()})
 	case sectionHibana:
-		m.plan.Scratch = append(m.plan.Scratch, model.ScratchNote{Text: srcText, CreatedAt: time.Now()})
+		if n, err := m.scratchAdd(srcText); err == nil {
+			m.plan.Scratch = append(m.plan.Scratch, n)
+		}
 	case sectionMonthlyTarget:
 		m.plan.MonthlyTargets = append(m.plan.MonthlyTargets, model.MonthlyTarget{Text: srcText, CreatedAt: time.Now()})
 	}
@@ -2421,6 +2449,7 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 				}
 			case sectionHibana:
 				if idx >= 0 && idx < len(m.plan.Scratch) {
+					_ = m.scratchDelete(m.plan.Scratch[idx])
 					m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
 					m.statusMsg = "Note removed"
 				}
@@ -2473,6 +2502,7 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 	case sectionHibana:
 		idx := fi.focusIdx
 		if idx >= 0 && idx < len(m.plan.Scratch) {
+			_ = m.scratchDelete(m.plan.Scratch[idx])
 			m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
 			m.statusMsg = "Note removed"
 		}
@@ -2600,4 +2630,89 @@ func removeInt(slice []int, val int) []int {
 		}
 	}
 	return result
+}
+
+// notesToScratch translates hibana.Note into the model.ScratchNote shape
+// the TUI uses internally. Id is preserved so we can address back into the
+// hibana store on edit/delete.
+func notesToScratch(notes []hibana.Note) []model.ScratchNote {
+	out := make([]model.ScratchNote, 0, len(notes))
+	for _, n := range notes {
+		out = append(out, model.ScratchNote{
+			Id:        string(n.ID),
+			Text:      n.Text,
+			CreatedAt: n.CreatedAt,
+			UpdatedAt: n.UpdatedAt,
+		})
+	}
+	return out
+}
+
+// scratchAdd persists a new note via the hibana store and returns the
+// ScratchNote with its freshly minted Id. If hibanaStore is nil (no Redis
+// configured at TUI start), we still return a ScratchNote so the UI flow
+// works — but it'll have no Id and won't survive restarts.
+func (m *AppModel) scratchAdd(text string) (model.ScratchNote, error) {
+	if m.hibanaStore == nil {
+		now := time.Now()
+		return model.ScratchNote{Text: text, CreatedAt: now, UpdatedAt: now}, nil
+	}
+	n, err := m.hibanaStore.Add(text)
+	if err != nil {
+		return model.ScratchNote{}, err
+	}
+	go m.bestEffortSync()
+	return model.ScratchNote{
+		Id:        string(n.ID),
+		Text:      n.Text,
+		CreatedAt: n.CreatedAt,
+		UpdatedAt: n.UpdatedAt,
+	}, nil
+}
+
+// scratchEdit replaces a note via the hibana store. The returned
+// ScratchNote has the new Id (edit is implemented as delete+add).
+func (m *AppModel) scratchEdit(old model.ScratchNote, newText string) (model.ScratchNote, error) {
+	if m.hibanaStore == nil || old.Id == "" {
+		old.Text = newText
+		old.UpdatedAt = time.Now()
+		return old, nil
+	}
+	n, err := m.hibanaStore.Edit(hibana.ID(old.Id), newText)
+	if err != nil {
+		return model.ScratchNote{}, err
+	}
+	go m.bestEffortSync()
+	return model.ScratchNote{
+		Id:        string(n.ID),
+		Text:      n.Text,
+		CreatedAt: n.CreatedAt,
+		UpdatedAt: n.UpdatedAt,
+	}, nil
+}
+
+// scratchDelete removes a note via the hibana store. Idempotent: an empty
+// Id (legacy unmigrated note) is silently ignored — the caller still
+// removes it from the in-memory slice, which is the only place it lived.
+func (m *AppModel) scratchDelete(n model.ScratchNote) error {
+	if m.hibanaStore == nil || n.Id == "" {
+		return nil
+	}
+	if err := m.hibanaStore.Delete(hibana.ID(n.Id)); err != nil {
+		return err
+	}
+	go m.bestEffortSync()
+	return nil
+}
+
+// bestEffortSync pushes any unpushed events. Called after each mutation;
+// failures are swallowed because the local log is already durable and the
+// next sync will retry.
+func (m *AppModel) bestEffortSync() {
+	if m.hibanaStore == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = m.hibanaStore.Sync(ctx)
 }

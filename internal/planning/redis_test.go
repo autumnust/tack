@@ -231,51 +231,43 @@ func storeWithFake(t *testing.T) (*Store, *fakeBackend) {
 func TestSavePlan_WritesRedisAndLocal(t *testing.T) {
 	s, fb := storeWithFake(t)
 	plan := &model.Plan{
-		Today:   []model.TodoItem{{Text: "a", CreatedAt: time.Now().Truncate(time.Second)}},
-		Scratch: []model.ScratchNote{{Text: "n1", CreatedAt: time.Now().Truncate(time.Second)}},
+		Today: []model.TodoItem{{Text: "a", CreatedAt: time.Now().Truncate(time.Second)}},
+		// Scratch is now owned by the hibana package; SavePlan must strip it.
+		Scratch: []model.ScratchNote{{Text: "should-not-persist", CreatedAt: time.Now().Truncate(time.Second)}},
 	}
 	if err := s.SavePlan(plan); err != nil {
 		t.Fatal(err)
 	}
 
-	// Redis tack:plan must not include Scratch.
 	raw, ok := fb.kv[keyPlan]
 	if !ok {
 		t.Fatal("expected tack:plan in redis")
 	}
-	if strings.Contains(raw, "n1") {
+	if strings.Contains(raw, "should-not-persist") {
 		t.Errorf("tack:plan should not carry scratch text: %s", raw)
 	}
-
-	// Scratch lives in tack:hibana list.
-	if len(fb.lists[keyHibana]) != 1 {
-		t.Errorf("expected 1 hibana entry, got %d", len(fb.lists[keyHibana]))
+	if len(fb.lists[keyHibana]) != 0 {
+		t.Errorf("planning.Store should not write to hibana list, got %d entries", len(fb.lists[keyHibana]))
 	}
-
-	// Local yaml still has everything.
 	data, err := os.ReadFile(filepath.Join(s.Dir(), "plan.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "n1") {
-		t.Errorf("local yaml missing scratch: %s", data)
+	if strings.Contains(string(data), "should-not-persist") {
+		t.Errorf("local yaml should not carry scratch: %s", data)
 	}
 }
 
-func TestLoadPlan_PrefersRedis_OverlaysHibana(t *testing.T) {
+func TestLoadPlan_StripsScratch(t *testing.T) {
 	s, fb := storeWithFake(t)
 
-	// Seed Redis directly with a plan (no scratch) and a hibana list.
-	plan := &model.Plan{Today: []model.TodoItem{{Text: "from-cloud"}}}
+	// Seed Redis with a plan that mistakenly carries scratch (legacy data).
+	plan := &model.Plan{
+		Today:   []model.TodoItem{{Text: "from-cloud"}},
+		Scratch: []model.ScratchNote{{Text: "stale-scratch"}},
+	}
 	blob, _ := json.Marshal(plan)
 	fb.kv[keyPlan] = string(blob)
-	n := model.ScratchNote{Text: "cloud-note", CreatedAt: time.Now().Truncate(time.Second)}
-	nb, _ := json.Marshal(n)
-	fb.lists[keyHibana] = []string{string(nb)}
-
-	// Write a conflicting local yaml — Redis should win.
-	yblob, _ := yaml.Marshal(&model.Plan{Today: []model.TodoItem{{Text: "stale-local"}}})
-	_ = os.WriteFile(filepath.Join(s.Dir(), "plan.yaml"), yblob, 0644)
 
 	got, err := s.LoadPlan()
 	if err != nil {
@@ -284,14 +276,8 @@ func TestLoadPlan_PrefersRedis_OverlaysHibana(t *testing.T) {
 	if len(got.Today) != 1 || got.Today[0].Text != "from-cloud" {
 		t.Errorf("expected cloud plan, got %+v", got.Today)
 	}
-	if len(got.Scratch) != 1 || got.Scratch[0].Text != "cloud-note" {
-		t.Errorf("expected hibana overlay, got %+v", got.Scratch)
-	}
-
-	// Redis load must mirror to local disk.
-	data, _ := os.ReadFile(filepath.Join(s.Dir(), "plan.yaml"))
-	if !strings.Contains(string(data), "from-cloud") {
-		t.Errorf("local yaml not refreshed after Redis load: %s", data)
+	if len(got.Scratch) != 0 {
+		t.Errorf("LoadPlan must strip Scratch (hibana owns it), got %+v", got.Scratch)
 	}
 }
 
@@ -328,102 +314,8 @@ func TestSavePlan_RedisFailureDoesNotError(t *testing.T) {
 	}
 }
 
-func TestSavePlan_HibanaRewriteBuffersReplaceOnPartialFailure(t *testing.T) {
-	s, fb := storeWithFake(t)
-
-	t0 := time.Now().Truncate(time.Second)
-	keep := model.ScratchNote{Text: "keep", CreatedAt: t0}
-	drop := model.ScratchNote{Text: "drop", CreatedAt: t0.Add(time.Second)}
-	extra := model.ScratchNote{Text: "extra", CreatedAt: t0.Add(2 * time.Second)}
-	for _, n := range []model.ScratchNote{keep, drop, extra} {
-		b, _ := json.Marshal(n)
-		fb.lists[keyHibana] = append(fb.lists[keyHibana], string(b))
-	}
-	s.captureHibanaSnapshot([]model.ScratchNote{keep, drop})
-
-	failed := false
-	fb.hook = func(method, key string) error {
-		if key == keyHibana && method == "RPUSH" && !failed {
-			failed = true
-			return errors.New("rpush failed after del")
-		}
-		return nil
-	}
-
-	if err := s.SavePlan(&model.Plan{Scratch: []model.ScratchNote{keep}}); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := len(fb.lists[keyHibana]); got != 0 {
-		t.Fatalf("expected remote hibana cleared after partial failure, got %d", got)
-	}
-	if s.OutboxPending() != 1 {
-		t.Fatalf("expected buffered replace op, got %d", s.OutboxPending())
-	}
-	ops, err := s.outbox.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ops) != 1 || ops[0].Op != "replace_list" || ops[0].Key != keyHibana {
-		t.Fatalf("expected one hibana replace op, got %+v", ops)
-	}
-
-	fb.hook = nil
-	rep, err := s.Reconcile()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Replayed != 1 {
-		t.Fatalf("expected 1 replayed op, got %+v", rep)
-	}
-	if got := len(fb.lists[keyHibana]); got != 2 {
-		t.Fatalf("expected reconstructed hibana list, got %d", got)
-	}
-	var texts []string
-	for _, raw := range fb.lists[keyHibana] {
-		var n model.ScratchNote
-		_ = json.Unmarshal([]byte(raw), &n)
-		texts = append(texts, n.Text)
-	}
-	want := []string{"keep", "extra"}
-	for i, w := range want {
-		if texts[i] != w {
-			t.Fatalf("entry %d: got %q want %q (full=%v)", i, texts[i], w, texts)
-		}
-	}
-}
-
-func TestAddHibana_AppendsToList_AndLocal(t *testing.T) {
-	s, fb := storeWithFake(t)
-
-	n1 := model.ScratchNote{Text: "one", CreatedAt: time.Now().Truncate(time.Second)}
-	n2 := model.ScratchNote{Text: "two", CreatedAt: time.Now().Add(time.Second).Truncate(time.Second)}
-
-	if err := s.AddHibana(n1); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddHibana(n2); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := len(fb.lists[keyHibana]); got != 2 {
-		t.Fatalf("expected 2 hibana entries, got %d", got)
-	}
-
-	// Order preserved and no tack:plan rewrite.
-	if _, ok := fb.kv[keyPlan]; ok {
-		t.Error("AddHibana must not touch tack:plan")
-	}
-
-	// Local yaml has both notes.
-	data, err := os.ReadFile(filepath.Join(s.Dir(), "plan.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "one") || !strings.Contains(string(data), "two") {
-		t.Errorf("local yaml missing notes: %s", data)
-	}
-}
+// (Hibana persistence and offline-replay tests have moved to internal/hibana —
+// planning.Store no longer manages scratch.)
 
 func TestAnnotations_RedisRoundtrip(t *testing.T) {
 	s, fb := storeWithFake(t)

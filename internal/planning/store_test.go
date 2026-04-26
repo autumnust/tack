@@ -44,8 +44,10 @@ func TestSavePlan_LoadPlan_Roundtrip(t *testing.T) {
 		Today: []model.TodoItem{
 			{Text: "Review PR", Done: false, CreatedAt: time.Now().Truncate(time.Second)},
 		},
+		// Scratch is owned by the hibana package now; SavePlan deliberately
+		// strips it from the persisted plan.
 		Scratch: []model.ScratchNote{
-			{Text: "Random thought", CreatedAt: time.Now().Truncate(time.Second)},
+			{Text: "should not survive", CreatedAt: time.Now().Truncate(time.Second)},
 		},
 	}
 
@@ -70,8 +72,8 @@ func TestSavePlan_LoadPlan_Roundtrip(t *testing.T) {
 	if len(loaded.Today) != 1 || loaded.Today[0].Text != "Review PR" {
 		t.Error("today round-trip failed")
 	}
-	if len(loaded.Scratch) != 1 || loaded.Scratch[0].Text != "Random thought" {
-		t.Error("scratch round-trip failed")
+	if len(loaded.Scratch) != 0 {
+		t.Errorf("scratch should be stripped on save/load, got %d entries", len(loaded.Scratch))
 	}
 }
 

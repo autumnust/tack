@@ -175,20 +175,11 @@ func (s *Store) replayAppendOnly(ctx context.Context, ops []OutboxOp) error {
 	return s.redis.RPush(ctx, key, vals...)
 }
 
-func (s *Store) replayHibana(ctx context.Context, ops []OutboxOp) error {
-	if len(ops) == 0 {
-		return nil
-	}
-	for i := len(ops) - 1; i >= 0; i-- {
-		if ops[i].Op == "replace_list" {
-			notes, err := decodeScratchNotes(ops[i].Payload)
-			if err != nil {
-				return err
-			}
-			return s.replaceHibanaList(ctx, notes)
-		}
-	}
-	return s.replayAppendOnly(ctx, ops)
+// replayHibana is a no-op: the hibana feature has moved to its own package
+// with its own sync layer. Any leftover outbox entries from the old design
+// are dropped on replay so they don't keep failing forever.
+func (s *Store) replayHibana(_ context.Context, _ []OutboxOp) error {
+	return nil
 }
 
 func decodeScratchNotes(payload string) ([]model.ScratchNote, error) {

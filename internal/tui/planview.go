@@ -332,12 +332,10 @@ func (m *PlanViewModel) MoveUp() bool {
 			return true
 		}
 	case sectionHibana:
-		if fi.focusIdx > 0 {
-			m.plan.Scratch[fi.focusIdx], m.plan.Scratch[fi.focusIdx-1] = m.plan.Scratch[fi.focusIdx-1], m.plan.Scratch[fi.focusIdx]
-			m.cursorIdx--
-			m.rebuildFlat()
-			return true
-		}
+		// Hibana reorder is not supported: the section is sorted by
+		// recency on render, so manual order would not persist across
+		// reloads. Returning false leaves the cursor untouched.
+		return false
 	case sectionMonthlyTarget:
 		if fi.focusIdx > 0 {
 			m.plan.MonthlyTargets[fi.focusIdx], m.plan.MonthlyTargets[fi.focusIdx-1] = m.plan.MonthlyTargets[fi.focusIdx-1], m.plan.MonthlyTargets[fi.focusIdx]
@@ -385,12 +383,8 @@ func (m *PlanViewModel) MoveDown() bool {
 			return true
 		}
 	case sectionHibana:
-		if fi.focusIdx < len(m.plan.Scratch)-1 {
-			m.plan.Scratch[fi.focusIdx], m.plan.Scratch[fi.focusIdx+1] = m.plan.Scratch[fi.focusIdx+1], m.plan.Scratch[fi.focusIdx]
-			m.cursorIdx++
-			m.rebuildFlat()
-			return true
-		}
+		// Hibana reorder is not supported (see MoveUp).
+		return false
 	case sectionMonthlyTarget:
 		if fi.focusIdx < len(m.plan.MonthlyTargets)-1 {
 			m.plan.MonthlyTargets[fi.focusIdx], m.plan.MonthlyTargets[fi.focusIdx+1] = m.plan.MonthlyTargets[fi.focusIdx+1], m.plan.MonthlyTargets[fi.focusIdx]

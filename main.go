@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"gopkg.in/yaml.v3"
 
+	"github.com/autumnust/tack/internal/hibana"
 	"github.com/autumnust/tack/internal/model"
 	"github.com/autumnust/tack/internal/planning"
 	"github.com/autumnust/tack/internal/tui"
@@ -31,6 +33,8 @@ func main() {
 	migrateLeisureVault := flag.String("migrate-leisure-vault", "", "one-time: import plan.yaml/annotations.yaml from <path> into Redis and exit")
 	migrateForce := flag.Bool("force", false, "with --migrate-leisure-vault, overwrite existing Redis keys")
 	resolveConflicts := flag.Bool("resolve-conflicts", false, "interactively resolve offline-sync conflicts and exit")
+	migrateHibana := flag.String("migrate-hibana", "", "one-time: import legacy hibana scratch notes from <vault-dir> (containing tack/plan.yaml) into the new ~/.tack/hibana.jsonl log; also recovers from git history when --git-commit is provided")
+	migrateHibanaCommit := flag.String("git-commit", "", "with --migrate-hibana: recover scratch entries from this git commit (e.g. afed1c3 for the Corgi Cafe note)")
 	flag.Parse()
 
 	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
@@ -93,6 +97,10 @@ func main() {
 	}
 	if *resolveConflicts {
 		runResolveConflicts(config)
+		return
+	}
+	if *migrateHibana != "" {
+		runMigrateHibana(config, *migrateHibana, *migrateHibanaCommit)
 		return
 	}
 
@@ -224,17 +232,45 @@ func generateRecap(config model.Config) {
 }
 
 func addHibana(config model.Config, text string) {
-	store, err := openStore(config)
+	planDir := config.Planning.Dir
+	if planDir == "" {
+		planDir = "~/.tack"
+	}
+	url, token := resolveRedisCreds(config)
+	var backend hibana.Backend = hibana.NopBackend()
+	if url != "" && token != "" {
+		backend = hibana.NewRESTBackend(url, token)
+	}
+	hs, err := hibana.Open(planDir, backend)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
-	note := model.ScratchNote{Text: text, CreatedAt: time.Now()}
-	if err := store.AddHibana(note); err != nil {
+	if _, err := hs.Add(text); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Hibana: %s  %s\n", text, redisStatus(store))
+	// Best-effort sync. Failures are visible in the status indicator.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	rep := hs.Sync(ctx)
+	cancel()
+	fmt.Printf("Hibana: %s  %s\n", text, hibanaStatus(hs, rep))
+}
+
+// hibanaStatus mirrors redisStatus' compact format so the UX is consistent.
+func hibanaStatus(hs *hibana.Store, rep hibana.SyncReport) string {
+	if !hs.Backend().Enabled() {
+		return "(redis: off — local only)"
+	}
+	if rep.Err != nil {
+		pending, _ := hs.PendingPush()
+		return fmt.Sprintf("(redis: error, %d pending — will retry)", pending)
+	}
+	pending, _ := hs.PendingPush()
+	if pending > 0 {
+		return fmt.Sprintf("(redis: on, %d pending)", pending)
+	}
+	return "(redis: on)"
 }
 
 // redisStatus returns a one-line indicator suitable for trailing any CLI output.
@@ -470,4 +506,54 @@ func loadConfig(path string) (model.Config, error) {
 		return model.Config{}, fmt.Errorf("'focus' is required — add global focus issue numbers or per-team-member focus lists")
 	}
 	return config, nil
+}
+
+// runMigrateHibana imports legacy scratch notes from the old vault into the
+// new ~/.tack/hibana.jsonl log. Optionally recovers entries from a specific
+// git commit (used to recover the Corgi Cafe note destroyed by overwrite
+// in commit d187a7f — pass --git-commit afed1c3 to retrieve it).
+func runMigrateHibana(config model.Config, vaultPath, gitCommit string) {
+	planDir := config.Planning.Dir
+	if planDir == "" {
+		planDir = "~/.tack"
+	}
+	url, token := resolveRedisCreds(config)
+	var backend hibana.Backend = hibana.NopBackend()
+	if url != "" && token != "" {
+		backend = hibana.NewRESTBackend(url, token)
+	}
+	hs, err := hibana.Open(planDir, backend)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening hibana store: %s\n", err)
+		os.Exit(1)
+	}
+
+	src := hibana.MigrateSource{
+		PlanYAMLPath: filepath.Join(vaultPath, "plan.yaml"),
+	}
+	if gitCommit != "" {
+		// vaultPath contains tack/plan.yaml; the git repo root is its parent.
+		src.GitRepoPath = filepath.Dir(vaultPath)
+		src.GitCommit = gitCommit
+		src.GitRelPath = filepath.Join(filepath.Base(vaultPath), "plan.yaml")
+	}
+	rep, err := hibana.Migrate(hs, src)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Migration failed: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Migration: yaml=%d list=%d git=%d → imported=%d (skipped=%d duplicates)\n",
+		rep.FromYAML, rep.FromList, rep.FromGit, rep.Imported, rep.Duplicates)
+
+	if hs.Backend().Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s := hs.Sync(ctx)
+		if s.Err != nil {
+			fmt.Fprintf(os.Stderr, "Sync after migration: %s\n", s.Err)
+		} else {
+			fmt.Printf("Synced to Redis: %d events pushed.\n", s.Pushed)
+		}
+	}
+	fmt.Printf("Hibana log: %s\n", hs.LogPath())
 }
