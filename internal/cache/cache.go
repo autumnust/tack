@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/autumnust/tack/internal/model"
@@ -13,10 +14,19 @@ import (
 
 const cacheDir = ".cache/tack"
 
+// CachedProject is the on-disk shape of the per-project cache.
+//
+// FocusHash captures which focus set the cached items were filtered against
+// at write time. Save filters items to only those whose Number or Parent
+// is in focusSet, so a cache written under one focus is missing items that
+// would be in scope under a different focus. Load* compares the requested
+// focus's hash against the stored one and returns nil on mismatch — that
+// forces a fresh fetch when config focus changes.
 type CachedProject struct {
-	FetchedAt time.Time          `json:"fetched_at"`
-	Project   *model.Project     `json:"project"`
+	FetchedAt time.Time           `json:"fetched_at"`
+	Project   *model.Project      `json:"project"`
 	Items     []model.ProjectItem `json:"items"`
+	FocusHash string              `json:"focus_hash,omitempty"`
 }
 
 func cachePath(projectURL string) string {
@@ -25,8 +35,30 @@ func cachePath(projectURL string) string {
 	return filepath.Join(home, cacheDir, hash+".json")
 }
 
-// Load returns the cached project data, or nil if no cache or expired.
-func Load(projectURL string, maxAge time.Duration) *CachedProject {
+// hashFocus produces a deterministic short string for a focus set. Empty/nil
+// returns the empty string (matches "all items, no filter" caches).
+func hashFocus(focusSet map[int]bool) string {
+	if len(focusSet) == 0 {
+		return ""
+	}
+	nums := make([]int, 0, len(focusSet))
+	for n := range focusSet {
+		if focusSet[n] {
+			nums = append(nums, n)
+		}
+	}
+	sort.Ints(nums)
+	h := sha256.New()
+	for _, n := range nums {
+		fmt.Fprintf(h, "%d\n", n)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+// readCacheFile reads the cache for projectURL. Returns nil if missing,
+// unparseable, or filtered against a different focus set than requested.
+// Pass nil/empty focusSet to skip the focus check (legacy callers).
+func readCacheFile(projectURL string, focusSet map[int]bool, requireFocusMatch bool) *CachedProject {
 	path := cachePath(projectURL)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -36,25 +68,30 @@ func Load(projectURL string, maxAge time.Duration) *CachedProject {
 	if err := json.Unmarshal(data, &cached); err != nil {
 		return nil
 	}
-	if time.Since(cached.FetchedAt) > maxAge {
+	if requireFocusMatch && cached.FocusHash != hashFocus(focusSet) {
 		return nil
 	}
 	return &cached
 }
 
-// LoadAny returns cached data regardless of age (for instant startup).
-// Returns nil only if no cache file exists.
-func LoadAny(projectURL string) *CachedProject {
-	path := cachePath(projectURL)
-	data, err := os.ReadFile(path)
-	if err != nil {
+// Load returns the cached project data, or nil if no cache, expired, or
+// filtered against a different focus set.
+func Load(projectURL string, focusSet map[int]bool, maxAge time.Duration) *CachedProject {
+	cached := readCacheFile(projectURL, focusSet, true)
+	if cached == nil {
 		return nil
 	}
-	var cached CachedProject
-	if err := json.Unmarshal(data, &cached); err != nil {
+	if time.Since(cached.FetchedAt) > maxAge {
 		return nil
 	}
-	return &cached
+	return cached
+}
+
+// LoadAny returns cached data regardless of age, but still requires the
+// focus hash to match (a cache filtered against the wrong focus would be
+// silently incomplete — see the bug behind issue #2).
+func LoadAny(projectURL string, focusSet map[int]bool) *CachedProject {
+	return readCacheFile(projectURL, focusSet, true)
 }
 
 // Save writes project data to the cache, filtered to only focused items.
@@ -79,13 +116,13 @@ func Save(projectURL string, project *model.Project, focusSet map[int]bool) erro
 		items = filtered
 	}
 
-	// Cache project metadata without items (items stored separately after filtering)
 	projCopy := *project
 	projCopy.Items = nil
 	cached := CachedProject{
 		FetchedAt: time.Now(),
 		Project:   &projCopy,
 		Items:     items,
+		FocusHash: hashFocus(focusSet),
 	}
 	data, err := json.Marshal(cached)
 	if err != nil {
@@ -94,9 +131,11 @@ func Save(projectURL string, project *model.Project, focusSet map[int]bool) erro
 	return os.WriteFile(path, data, 0644)
 }
 
-// IsFresh returns true if the cache is younger than maxAge.
-func IsFresh(projectURL string, maxAge time.Duration) bool {
-	cached := LoadAny(projectURL)
+// IsFresh returns true if the cache is younger than maxAge AND was written
+// against the same focus set. A cache filtered against a different focus
+// would render an incomplete board, so we treat that as "not fresh."
+func IsFresh(projectURL string, focusSet map[int]bool, maxAge time.Duration) bool {
+	cached := readCacheFile(projectURL, focusSet, true)
 	if cached == nil {
 		return false
 	}

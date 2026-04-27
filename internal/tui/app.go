@@ -170,8 +170,10 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 		}
 	}
 
-	// Load cache synchronously — no loading flash
-	cached := cache.LoadAny(config.Project)
+	// Load cache synchronously — no loading flash. We pass the current
+	// focus set so a cache written against a stale focus is rejected
+	// (forces a fresh fetch). See issue #2 / cache.go for context.
+	cached := cache.LoadAny(config.Project, app.allFocusNumbers())
 	if cached != nil && cached.Project != nil {
 		project := cached.Project
 		project.Items = cached.Items
