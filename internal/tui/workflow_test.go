@@ -707,6 +707,42 @@ func TestHibanaEditorFlow(t *testing.T) {
 	}
 }
 
+// Opening a hibana note in the editor and saving it without text changes
+// must NOT bump UpdatedAt. The recency-sorted view would otherwise re-rank
+// the note just because the user took a peek.
+func TestHibanaEditorNoChangeKeepsUpdatedAt(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	old := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "untouched note", CreatedAt: old, UpdatedAt: old},
+		{Text: "other", CreatedAt: old.Add(time.Hour), UpdatedAt: old.Add(time.Hour)},
+	}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	// Move cursor to the older note (newer is at the top by default).
+	app = sendKeys(t, app, "j")
+
+	// Simulate editor exit with the SAME text — user opened, didn't edit.
+	tmpFile := t.TempDir() + "/note.md"
+	os.WriteFile(tmpFile, []byte("untouched note"), 0644)
+	m, _ := app.Update(editorFinishedMsg{tmpPath: tmpFile, section: sectionHibana, idx: 0, subIdx: -1, err: nil})
+	app = m.(AppModel)
+
+	if !app.plan.Scratch[0].UpdatedAt.Equal(old) {
+		t.Errorf("UpdatedAt changed despite no text change: orig=%v now=%v",
+			old, app.plan.Scratch[0].UpdatedAt)
+	}
+	if app.plan.Scratch[0].Text != "untouched note" {
+		t.Errorf("text mutated: %q", app.plan.Scratch[0].Text)
+	}
+	assertStatus(t, app, "Note unchanged")
+}
+
 func TestHibanaEditMovesRecentlyModifiedToTop(t *testing.T) {
 	app := newTestApp()
 	app.width = 80

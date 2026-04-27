@@ -611,12 +611,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusMsg = "Note save failed: " + err.Error()
 				}
 			} else if msg.idx < len(m.plan.Scratch) {
-				updated, err := m.scratchEdit(m.plan.Scratch[msg.idx], text)
-				if err == nil {
-					m.plan.Scratch[msg.idx] = updated
-					m.statusMsg = "Note updated"
+				// Skip the store round-trip when the text is unchanged so
+				// the note's UpdatedAt (and hence its position in the
+				// recency-sorted list) doesn't move.
+				if text == m.plan.Scratch[msg.idx].Text {
+					m.statusMsg = "Note unchanged"
 				} else {
-					m.statusMsg = "Note edit failed: " + err.Error()
+					updated, err := m.scratchEdit(m.plan.Scratch[msg.idx], text)
+					if err == nil {
+						m.plan.Scratch[msg.idx] = updated
+						m.statusMsg = "Note updated"
+					} else {
+						m.statusMsg = "Note edit failed: " + err.Error()
+					}
 				}
 			}
 		case sectionMonthlyTarget:
