@@ -23,3 +23,9 @@ status_field: "Status"
 planning:
   dir: "~/.tack"
   max_week_focus: 3
+
+# repos: where each repo is checked out on this host. :ship uses these
+# to set the working tree of the new tmux session. Missing entries fall
+# back to ~/work/<basename of repo>.
+# repos:
+#   kumo-ai/kumo: ~/work/kumo

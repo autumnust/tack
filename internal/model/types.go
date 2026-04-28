@@ -21,6 +21,11 @@ type Config struct {
 	StatusField string         `yaml:"status_field"`
 	Focus       []int          `yaml:"focus,omitempty"`
 	Planning    PlanningConfig `yaml:"planning,omitempty"`
+
+	// Repos maps "<owner>/<repo>" → absolute path of the local clone on
+	// the current host. Used by :ship to set the working tree of the
+	// new tmux session. Missing entries fall back to ~/work/<basename>.
+	Repos map[string]string `yaml:"repos,omitempty"`
 }
 
 // TeamLogins returns just the login strings.

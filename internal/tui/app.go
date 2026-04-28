@@ -19,6 +19,7 @@ import (
 	"github.com/autumnust/tack/internal/hibana"
 	"github.com/autumnust/tack/internal/model"
 	"github.com/autumnust/tack/internal/planning"
+	"github.com/autumnust/tack/internal/ship"
 )
 
 type viewMode int
@@ -75,6 +76,12 @@ type AppModel struct {
 	// redisTag is a persistent status suffix (e.g. "(redis: on)") rendered
 	// alongside statusMsg so transient messages don't hide the sync state.
 	redisTag string
+
+	// shipGH and shipSSH are dependency-injection points for :ship. The
+	// production paths use the defaults (real gh CLI, real ssh); tests
+	// inject fakes here to avoid touching GitHub or remote hosts.
+	shipGH  ship.GHRunner
+	shipSSH ship.SSHRunner
 }
 
 // Messages
@@ -89,12 +96,26 @@ type pushDoneMsg struct {
 	err     error
 }
 
+// editorPurpose tags what the editor session is for, so the
+// editorFinishedMsg handler routes the result to the right code path.
+// The default zero value (editorPurposePlanItem) preserves existing
+// plan-item editing behavior; :promote and :ship use distinct purposes
+// so they can override the post-save flow.
+type editorPurpose int
+
+const (
+	editorPurposePlanItem editorPurpose = iota // default — section/idx/subIdx interpreted
+	editorPurposePromote                        // hibana note → today todo (via vim)
+	editorPurposeShip                           // today todo → ship template
+)
+
 type editorFinishedMsg struct {
 	tmpPath string      // temp file to read back
 	section planSection // which section was being edited
 	idx     int         // -1 for new item, >=0 for editing existing
 	subIdx  int         // -1 for top-level, >=0 for sub-item (week focus)
 	personLogin string
+	purpose editorPurpose
 	err     error
 }
 
@@ -556,6 +577,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		text := strings.TrimRight(string(data), "\n")
+
+		// Workflow editors (:promote, :ship) have post-save logic distinct
+		// from the in-place plan-item editor; route them here before the
+		// default plan-item handling below.
+		switch msg.purpose {
+		case editorPurposePromote:
+			return m.finalizePromote(text, msg.idx)
+		case editorPurposeShip:
+			return m.finalizeShip(text, msg.idx)
+		}
 		if msg.personLogin != "" {
 			if m.planStore == nil {
 				m.statusMsg = "Person notes unavailable"
@@ -944,6 +975,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdSub(cmd.Args)
 	case "promote":
 		return m.cmdPromote(cmd.Args)
+	case "ship":
+		return m.cmdShip(cmd.Args)
 	case "del", "delete":
 		return m.cmdDelete(cmd.Args)
 	case "stats":
@@ -1448,7 +1481,9 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("Enter") + "Toggle done (focus / today / breakdown / target items)",
 		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
-		"  " + key(":promote") + "Promote breakdown item to today",
+		"  " + key(":promote N") + "Promote hibana note → today (vim edit pass)",
+		"  " + key(":promote") + "Promote breakdown item to today (legacy)",
+		"  " + key(":ship N") + "Ship today row → issue + tmux session",
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
@@ -2117,9 +2152,24 @@ func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
+	// New behavior: `:promote N` (or with cursor on a hibana row) opens
+	// vim with the note's text and, on save, creates a today todo +
+	// deletes the hibana row. Falls back to the legacy breakdown-item
+	// promote when no arg is given AND the cursor isn't on a hibana row.
+	if m.planView.section == sectionHibana || (len(args) > 0 && resolveHibanaIdx(args, &m) >= 0) {
+		idx := resolveHibanaIdx(args, &m)
+		if idx < 0 || idx >= len(m.plan.Scratch) {
+			m.statusMsg = "Usage: :promote <N> (1-indexed into hibana panel)"
+			return m, nil
+		}
+		text := m.plan.Scratch[idx].Text
+		return m.launchEditorForPurpose(text, editorPurposePromote, idx, "tack-promote-*.md")
+	}
+
+	// Legacy: promote a week-focus breakdown sub-item to today.
 	sub, _, ok := m.planView.PromoteItem()
 	if !ok {
-		m.statusMsg = "Navigate to a breakdown item under week focus to promote"
+		m.statusMsg = "Navigate to a hibana row or breakdown item to promote"
 		return m, nil
 	}
 
@@ -2133,6 +2183,187 @@ func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
 	})
 	m.planView.SetData(m.plan, m.project)
 	m.statusMsg = fmt.Sprintf("Promoted to today: %s", sub.Text)
+	return m, nil
+}
+
+// resolveHibanaIdx returns the 0-indexed hibana note index a :promote N
+// command should target. With no args, falls back to the cursor's hibana
+// index when in the hibana section; otherwise -1.
+func resolveHibanaIdx(args []string, m *AppModel) int {
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n < 1 {
+			return -1
+		}
+		return n - 1
+	}
+	if m.planView.section != sectionHibana {
+		return -1
+	}
+	fi := m.planView.currentFlat()
+	if fi == nil || fi.header {
+		return -1
+	}
+	return fi.focusIdx
+}
+
+// cmdShip is :ship N — opens the ship template for a today row, then on
+// save runs the orchestrator to create/attach the issue and start a
+// session. N is 1-indexed into the today panel; if omitted, uses the
+// cursor row when on the today section.
+func (m AppModel) cmdShip(args []string) (tea.Model, tea.Cmd) {
+	idx := resolveTodayIdx(args, &m)
+	if idx < 0 || idx >= len(m.plan.Today) {
+		m.statusMsg = "Usage: :ship <N> (1-indexed into today panel)"
+		return m, nil
+	}
+	if m.plan.Today[idx].IssueNum > 0 {
+		m.statusMsg = fmt.Sprintf("Today #%d already shipped as #%d", idx+1, m.plan.Today[idx].IssueNum)
+		return m, nil
+	}
+
+	tpl := ship.RenderTemplate(m.plan.Today[idx], ship.RenderOptions{
+		DefaultRepo: defaultShipRepo(m.config),
+		DefaultHost: "local",
+	})
+	return m.launchEditorForPurpose(tpl, editorPurposeShip, idx, "tack-ship-*.md")
+}
+
+func resolveTodayIdx(args []string, m *AppModel) int {
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n < 1 {
+			return -1
+		}
+		return n - 1
+	}
+	if m.planView.section != sectionToday {
+		return -1
+	}
+	fi := m.planView.currentFlat()
+	if fi == nil || fi.header {
+		return -1
+	}
+	return fi.focusIdx
+}
+
+// defaultShipRepo picks the repo to pre-fill the ship template's Repo
+// field. We use the first key of config.Repos when present so the user
+// gets a sensible default; otherwise return empty (template's
+// RenderOptions provides a final fallback).
+func defaultShipRepo(cfg model.Config) string {
+	for k := range cfg.Repos {
+		return k
+	}
+	return ""
+}
+
+// launchEditorForPurpose is a small variant of launchEditor that tags
+// the resulting message with a non-default purpose. The ship-template
+// case can't reuse launchEditor cleanly because launchEditor's
+// section/idx tagging belongs to the plan-item editor.
+func (m AppModel) launchEditorForPurpose(text string, purpose editorPurpose, idx int, pattern string) (tea.Model, tea.Cmd) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vim"
+	}
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating temp file: %s", err)
+		return m, nil
+	}
+	tmpFile := f.Name()
+	if text != "" {
+		f.WriteString(text)
+	}
+	f.Close()
+
+	c := exec.Command(editor, tmpFile)
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{tmpPath: tmpFile, purpose: purpose, idx: idx, err: err}
+	})
+}
+
+// finalizePromote handles a saved :promote edit. Empty text = abort.
+func (m AppModel) finalizePromote(text string, idx int) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" {
+		m.statusMsg = "Promote canceled."
+		return m, nil
+	}
+	if idx < 0 || idx >= len(m.plan.Scratch) {
+		m.statusMsg = "Promote target gone (note removed?)"
+		return m, nil
+	}
+	note := m.plan.Scratch[idx]
+
+	// Add to today first; if the delete fails we'd rather have a duplicate
+	// than lose the user's edit.
+	m.plan.Today = append(m.plan.Today, model.TodoItem{
+		Text:      text,
+		CreatedAt: time.Now(),
+	})
+	if err := m.scratchDelete(note); err != nil {
+		m.statusMsg = fmt.Sprintf("Promoted (warning: hibana delete failed: %s)", err)
+	} else {
+		m.statusMsg = "Promoted to today."
+	}
+	m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
+	m.planView.SetData(m.plan, m.project)
+	m.planView.SetSection(sectionToday)
+	m.view = viewPlan
+	return m, nil
+}
+
+// finalizeShip handles a saved :ship template. Empty file = abort.
+func (m AppModel) finalizeShip(text string, idx int) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" {
+		m.statusMsg = "Ship canceled."
+		return m, nil
+	}
+	if idx < 0 || idx >= len(m.plan.Today) {
+		m.statusMsg = "Ship target gone (today row removed?)"
+		return m, nil
+	}
+	form, err := ship.Parse(text)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Ship: %s", err)
+		return m, nil
+	}
+
+	gh := m.shipGH
+	if gh == nil {
+		gh = ship.DefaultGH{}
+	}
+	sshR := m.shipSSH
+	if sshR == nil {
+		sshR = ship.DefaultSSH{}
+	}
+
+	cfg := ship.OrchestrateConfig{
+		ProjectURL: m.config.Project,
+		RepoPaths:  m.config.Repos,
+	}
+	res, oerr := ship.Orchestrate(gh, sshR, form, cfg, &m.plan.Today[idx])
+	if oerr != nil {
+		// Partial state surfaced — todo may have IssueNum stamped already.
+		if res.Issue.Number > 0 {
+			m.statusMsg = fmt.Sprintf("Ship partial: created #%d but %s", res.Issue.Number, oerr)
+		} else {
+			m.statusMsg = fmt.Sprintf("Ship failed: %s", oerr)
+		}
+		m.planView.SetData(m.plan, m.project)
+		m.planView.SetSection(sectionToday)
+		m.view = viewPlan
+		return m, nil
+	}
+
+	m.statusMsg = ship.FormatStatus(res, form.Host)
+	m.planView.SetData(m.plan, m.project)
+	m.planView.SetSection(sectionToday)
+	m.view = viewPlan
 	return m, nil
 }
 
