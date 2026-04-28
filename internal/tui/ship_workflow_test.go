@@ -241,6 +241,157 @@ func TestShip_AbortNoOp(t *testing.T) {
 	assertStatus(t, app, "Ship canceled")
 }
 
+// TestShip_AbortOnUnsavedQuit: simulates `:q!` from vim — the editor
+// exits without writing, so the file's content is identical to the
+// template tack pre-filled. Nothing user-driven was decided, so nothing
+// should happen: no gh, no ssh, no IssueNum stamp.
+func TestShip_AbortOnUnsavedQuit(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `today "task"`)
+
+	gh := &fakeGH{}
+	ssh := &fakeSSH{}
+	app.shipGH = gh
+	app.shipSSH = ssh
+
+	// The exact template tack would have written. The file ends up with
+	// this same content because vim never saved.
+	tpl := `# Title
+
+
+# Body
+task
+
+# Repo
+kumo-ai/kumo
+
+# Issue
+new
+
+# Epic
+
+
+# Host
+local
+`
+	tmpFile := t.TempDir() + "/ship.md"
+	if err := os.WriteFile(tmpFile, []byte(tpl), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := app.Update(editorFinishedMsg{
+		tmpPath:         tmpFile,
+		purpose:         editorPurposeShip,
+		idx:             0,
+		originalContent: tpl,
+	})
+	app = m.(AppModel)
+
+	if app.plan.Today[0].IssueNum != 0 {
+		t.Errorf("IssueNum should remain 0 on :q!, got %d", app.plan.Today[0].IssueNum)
+	}
+	if len(gh.calls) > 0 {
+		t.Errorf(":q! must not call gh, got %d calls", len(gh.calls))
+	}
+	if len(ssh.calls) > 0 {
+		t.Errorf(":q! must not call ssh, got %d calls", len(ssh.calls))
+	}
+	assertStatus(t, app, "Ship canceled")
+}
+
+// TestShip_FromBoard_CreatesSessionWithSlug: in board view, with the
+// cursor on a project item, `:ship <slug>` creates a tmux session named
+// `<issue-num>-<slug>` for that item. No editor, no template, no
+// `gh issue create` (the issue already exists).
+func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	gh := &fakeGH{}
+	ssh := &fakeSSH{}
+	app.shipGH = gh
+	app.shipSSH = ssh
+
+	// Build a minimal board with one issue under one person.
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{
+				{
+					Issues: []model.ProjectItem{
+						{Number: 28151, Title: "Diskgraph", Repo: "kumo-ai/kumo"},
+					},
+				},
+			},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+
+	// Move cursor onto the issue (epic header is at idx 0 if present;
+	// no epic here, so issue is at 0).
+	// Ensure cursor is on the issue, not a header.
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	app = sendCommand(t, app, "ship multicat")
+
+	// Should have made one ssh call: ts new on the issue#-slug name.
+	if len(ssh.calls) != 1 {
+		t.Fatalf("expected 1 ssh call, got %d: %+v", len(ssh.calls), ssh.calls)
+	}
+	if !strings.Contains(ssh.calls[0].cmd, "ts new") {
+		t.Errorf("ssh cmd should run ts new, got %q", ssh.calls[0].cmd)
+	}
+	if !strings.Contains(ssh.calls[0].cmd, "28151-multicat") {
+		t.Errorf("session name should be 28151-multicat, got cmd %q", ssh.calls[0].cmd)
+	}
+	if len(gh.calls) > 0 {
+		t.Errorf("board ship should not call gh (issue already exists), got %d calls", len(gh.calls))
+	}
+	if !strings.Contains(app.statusMsg, "Shipped #28151") {
+		t.Errorf("status = %q, want 'Shipped #28151...'", app.statusMsg)
+	}
+	if !strings.Contains(app.statusMsg, "28151-multicat") {
+		t.Errorf("status missing 28151-multicat: %q", app.statusMsg)
+	}
+}
+
+// TestShip_FromBoard_RequiresSlug: `:ship` with no arg in board view
+// surfaces a usage hint instead of a silent default.
+func TestShip_FromBoard_RequiresSlug(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	gh := &fakeGH{}
+	ssh := &fakeSSH{}
+	app.shipGH = gh
+	app.shipSSH = ssh
+
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{{Issues: []model.ProjectItem{{Number: 28151, Title: "Diskgraph", Repo: "kumo-ai/kumo"}}}},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	app = sendCommand(t, app, "ship")
+
+	if len(ssh.calls) != 0 {
+		t.Errorf("expected no ssh calls without slug, got %d", len(ssh.calls))
+	}
+	if !strings.Contains(app.statusMsg, "slug") && !strings.Contains(app.statusMsg, "Usage") {
+		t.Errorf("status should hint at the slug arg, got %q", app.statusMsg)
+	}
+}
+
 func TestShip_PartialFailure_StampIssueAnyway(t *testing.T) {
 	app := newTestApp()
 	app.config.Project = "https://github.com/orgs/test-org/projects/1"

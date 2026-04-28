@@ -103,15 +103,24 @@ func Orchestrate(gh GHRunner, ssh SSHRunner, form ShipForm, cfg OrchestrateConfi
 	return res, nil
 }
 
-// resolveRepoPath returns the on-disk path for repo. If the config map
+// ResolveRepoPath returns the on-disk path for repo. If the config map
 // has an entry, use it. Otherwise fall back to ~/work/<basename> per the
-// finalized open-question recommendation.
-func resolveRepoPath(paths map[string]string, repo string) string {
+// finalized open-question recommendation. Exported so callers outside
+// the orchestrator (e.g., the board-mode :ship flow) can reuse the same
+// resolution logic without duplicating the fallback.
+func ResolveRepoPath(paths map[string]string, repo string) string {
 	if p, ok := paths[repo]; ok && p != "" {
 		return p
 	}
 	// fallback: ~/work/<basename of owner/repo>
 	return "~/work/" + path.Base(repo)
+}
+
+// resolveRepoPath kept as a thin wrapper for in-package callers; remove
+// after the next round of refactoring if we standardize on the exported
+// name.
+func resolveRepoPath(paths map[string]string, repo string) string {
+	return ResolveRepoPath(paths, repo)
 }
 
 // FormatStatus produces the user-visible "Shipped #N → host:N" string,

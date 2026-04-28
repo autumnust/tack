@@ -117,6 +117,11 @@ type editorFinishedMsg struct {
 	personLogin string
 	purpose editorPurpose
 	err     error
+	// originalContent is what tack pre-filled into the temp file. Used by
+	// :promote and :ship to detect "unsaved quit" — if the file's content
+	// equals this verbatim, vim never wrote, so the operation aborts
+	// without touching gh / ssh / today / hibana state.
+	originalContent string
 }
 
 const cacheTTL = 5 * time.Minute
@@ -583,9 +588,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// default plan-item handling below.
 		switch msg.purpose {
 		case editorPurposePromote:
-			return m.finalizePromote(text, msg.idx)
+			return m.finalizePromote(text, msg.originalContent, msg.idx)
 		case editorPurposeShip:
-			return m.finalizeShip(text, msg.idx)
+			return m.finalizeShip(text, msg.originalContent, msg.idx)
 		}
 		if msg.personLogin != "" {
 			if m.planStore == nil {
@@ -1485,7 +1490,8 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
 		"  " + key(":promote N") + "Promote hibana note → today (vim edit pass)",
 		"  " + key(":elevate") + "Elevate breakdown item under week-focus → today",
-		"  " + key(":ship N") + "Ship today row → issue + tmux session",
+		"  " + key(":ship N") + "Ship today row → issue + tmux session (template editor)",
+		"  " + key(":ship <slug>") + "(board mode) → tmux session for cursor's issue, named <num>-<slug>",
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
@@ -2207,11 +2213,22 @@ func resolveHibanaIdx(args []string, m *AppModel) int {
 	return fi.focusIdx
 }
 
-// cmdShip is :ship N — opens the ship template for a today row, then on
-// save runs the orchestrator to create/attach the issue and start a
-// session. N is 1-indexed into the today panel; if omitted, uses the
-// cursor row when on the today section.
+// cmdShip dispatches to either the today-flow or the board-flow,
+// depending on which view the user is in.
+//
+//   - viewPlan / today panel: `:ship N` (or `:ship` on cursor row) opens
+//     the ship template in vim and runs the full orchestrator on save.
+//   - viewBoard: `:ship <slug>` creates a tmux session named
+//     `<issue-num>-<slug>` for the cursor's project item. No editor,
+//     no template, no `gh issue create` — the issue already exists.
 func (m AppModel) cmdShip(args []string) (tea.Model, tea.Cmd) {
+	if m.view == viewBoard {
+		return m.cmdShipBoard(args)
+	}
+	return m.cmdShipToday(args)
+}
+
+func (m AppModel) cmdShipToday(args []string) (tea.Model, tea.Cmd) {
 	idx := resolveTodayIdx(args, &m)
 	if idx < 0 || idx >= len(m.plan.Today) {
 		m.statusMsg = "Usage: :ship <N> (1-indexed into today panel)"
@@ -2227,6 +2244,70 @@ func (m AppModel) cmdShip(args []string) (tea.Model, tea.Cmd) {
 		DefaultHost: "local",
 	})
 	return m.launchEditorForPurpose(tpl, editorPurposeShip, idx, "tack-ship-*.md")
+}
+
+// cmdShipBoard handles :ship <slug> from the board view. The cursor
+// must be on a project item (not an epic header). Slug is required —
+// it's the human-friendly half of the session name. We never invent
+// one because the user is best-positioned to pick something memorable.
+func (m AppModel) cmdShipBoard(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :ship <slug> — slug is a 1-2 word identifier appended to the issue number (e.g., :ship multicat → 28151-multicat)"
+		return m, nil
+	}
+	slug := strings.TrimSpace(strings.Join(args, "-"))
+	slug = sanitizeSlug(slug)
+	if slug == "" {
+		m.statusMsg = "Usage: :ship <slug> — slug must be alphanumeric (with optional hyphens)"
+		return m, nil
+	}
+	issue := m.board.SelectedIssue()
+	if issue == nil {
+		m.statusMsg = "Move the cursor onto a project item before running :ship <slug>"
+		return m, nil
+	}
+
+	host := "local"
+	repoPath := ship.ResolveRepoPath(m.config.Repos, issue.Repo)
+	sessionName := fmt.Sprintf("%d-%s", issue.Number, slug)
+	ticket := ship.IssueRef{Repo: issue.Repo, Number: issue.Number}
+
+	sshRunner := m.shipSSH
+	if sshRunner == nil {
+		sshRunner = ship.DefaultSSH{}
+	}
+	res, err := ship.CreateSession(sshRunner, host, sessionName, repoPath, ticket)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Ship: %s", err)
+		return m, nil
+	}
+	m.statusMsg = ship.FormatStatus(ship.OrchestrateResult{
+		Issue:   ticket,
+		Session: res,
+	}, host)
+	return m, nil
+}
+
+// sanitizeSlug strips characters that have no business in a tmux session
+// name: tmux uses ASCII identifiers and our convention is lowercase
+// alphanumerics plus hyphens. Returns "" for inputs that have nothing
+// usable left.
+func sanitizeSlug(s string) string {
+	var b strings.Builder
+	prevHyphen := true
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevHyphen = false
+		case r == '-' || r == '_' || r == ' ':
+			if !prevHyphen {
+				b.WriteRune('-')
+				prevHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func resolveTodayIdx(args []string, m *AppModel) int {
@@ -2282,14 +2363,17 @@ func (m AppModel) launchEditorForPurpose(text string, purpose editorPurpose, idx
 	f.Close()
 
 	c := exec.Command(editor, tmpFile)
+	original := text
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return editorFinishedMsg{tmpPath: tmpFile, purpose: purpose, idx: idx, err: err}
+		return editorFinishedMsg{tmpPath: tmpFile, purpose: purpose, idx: idx, err: err, originalContent: original}
 	})
 }
 
-// finalizePromote handles a saved :promote edit. Empty text = abort.
-func (m AppModel) finalizePromote(text string, idx int) (tea.Model, tea.Cmd) {
-	if strings.TrimSpace(text) == "" {
+// finalizePromote handles a saved :promote edit. Aborts on either:
+//   - empty file (user explicitly cleared it), or
+//   - file unchanged from the prefilled note text (`:q!` from vim — never saved).
+func (m AppModel) finalizePromote(text, original string, idx int) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(original) {
 		m.statusMsg = "Promote canceled."
 		return m, nil
 	}
@@ -2317,9 +2401,13 @@ func (m AppModel) finalizePromote(text string, idx int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// finalizeShip handles a saved :ship template. Empty file = abort.
-func (m AppModel) finalizeShip(text string, idx int) (tea.Model, tea.Cmd) {
-	if strings.TrimSpace(text) == "" {
+// finalizeShip handles a saved :ship template. Aborts on either:
+//   - empty file (user explicitly cleared it), or
+//   - file unchanged from the prefilled template (`:q!` from vim — never saved).
+//
+// In both cases nothing happens: no gh, no ssh, today row stays put.
+func (m AppModel) finalizeShip(text, original string, idx int) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(original) {
 		m.statusMsg = "Ship canceled."
 		return m, nil
 	}
