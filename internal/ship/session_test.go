@@ -91,6 +91,31 @@ func TestCreateSession_PropagatesTsError(t *testing.T) {
 	}
 }
 
+// CreateSession must produce a command where the working-directory path
+// expands a leading ~ properly in /bin/sh. Single-quoting the path
+// (the original impl) silently broke tilde expansion: `cd '~/work/kumo'`
+// errors with "No such file or directory" because sh treats ~ literally
+// inside single quotes. The fix should produce a command where ~ is
+// rewritten to $HOME before quoting (or otherwise made expandable).
+func TestCreateSession_TildePathExpands(t *testing.T) {
+	ssh := &fakeSSH{}
+	ref := IssueRef{Number: 28151, Repo: "kumo-ai/kumo"}
+	if _, err := CreateSession(ssh, "local", "28151", "~/work/kumo", ref); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cmd := ssh.calls[0].cmd
+	// The unexpanded form is what's broken: literal '~/work/kumo' inside
+	// single quotes. Reject it.
+	if strings.Contains(cmd, "'~/") {
+		t.Errorf("path is single-quoted with literal ~ — sh won't expand it. cmd: %q", cmd)
+	}
+	// Acceptable forms: $HOME-substituted, or absolute. Either way, no
+	// literal tilde left.
+	if strings.Contains(cmd, "~") && !strings.Contains(cmd, "$HOME") {
+		t.Errorf("expected ~ to be substituted to $HOME (or expanded absolute), got %q", cmd)
+	}
+}
+
 var errSSHFake = &sshErr{msg: "ssh down"}
 
 type sshErr struct{ msg string }

@@ -41,7 +41,14 @@ func CreateSession(ssh SSHRunner, host, name, repoPath string, ticket IssueRef) 
 	// `ts new <name>` is run from the repo working tree so the new tmux
 	// session inherits that as its cwd. We `cd` first instead of using
 	// any flag because we don't know the ts CLI shape on every host yet.
-	createCmd := fmt.Sprintf("cd %s && ts new %s", shellQuote(repoPath), shellQuote(name))
+	//
+	// shellQuotePath wraps the repo path so a leading ~ still expands —
+	// sh doesn't expand tildes inside any kind of quoting, so the
+	// original `cd '~/work/kumo'` form silently failed with
+	// "No such file or directory." We rewrite ~ to $HOME (which is set
+	// both locally and on every reasonable remote host) and use double
+	// quotes so $HOME expands.
+	createCmd := fmt.Sprintf(`cd %s && ts new %s`, shellQuotePath(repoPath), shellQuote(name))
 	if _, err := ssh.Run(host, createCmd); err != nil {
 		return res, fmt.Errorf("ts new %s on %s: %w", name, host, err)
 	}
@@ -59,6 +66,35 @@ func CreateSession(ssh SSHRunner, host, name, repoPath string, ticket IssueRef) 
 
 // shellQuote returns a single-quoted version of s safe to splice into a
 // /bin/sh command. Embedded single quotes get the standard '\'' dance.
+//
+// Use this for arbitrary user-controlled strings (session names, free
+// text). Don't use it for filesystem paths that may start with `~` —
+// see shellQuotePath, which preserves shell expansion semantics.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// shellQuotePath quotes a filesystem path for /bin/sh while preserving
+// the shell's tilde-and-$HOME expansion behavior. A leading `~/` is
+// rewritten to `$HOME/`, and the result is wrapped in double quotes so
+// `$HOME` still expands. Embedded `"` and `\` get backslash-escaped.
+//
+// Why not single quotes: sh does not expand `~` or `$VAR` inside single
+// quotes, and we can't expand `~` ourselves Go-side because in remote
+// SSH cases the home dir we'd substitute is the local Mac's, not the
+// remote host's. Substituting to `$HOME` works in both cases — the
+// final shell that runs the command (local or remote) does the right
+// thing.
+func shellQuotePath(p string) string {
+	switch {
+	case p == "~":
+		p = "$HOME"
+	case strings.HasPrefix(p, "~/"):
+		p = "$HOME/" + p[2:]
+	}
+	// Inside double quotes, `\` and `"` need escaping; `$` is left alone
+	// so $HOME (and any caller-set vars in the path) expand naturally.
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	p = strings.ReplaceAll(p, `"`, `\"`)
+	return `"` + p + `"`
 }
