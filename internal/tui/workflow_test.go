@@ -1009,8 +1009,10 @@ func TestSubAddBreakdownItem(t *testing.T) {
 	}
 }
 
-// Test 42: :promote moves sub-item to today
-func TestPromoteToToday(t *testing.T) {
+// Test 42: :elevate moves a week-focus breakdown sub-item to today.
+// (Renamed from :promote — the latter now exclusively means
+// hibana → today, see TestPromoteFromHibana.)
+func TestElevateToToday(t *testing.T) {
 	app := newTestApp()
 	app = sendCommand(t, app, "plan")
 	app = sendCommand(t, app, `goal "Ship v1"`)
@@ -1019,14 +1021,32 @@ func TestPromoteToToday(t *testing.T) {
 	// Navigate to the sub-item (j from goal header)
 	app = sendKeys(t, app, "j")
 
-	app = sendCommand(t, app, "promote")
+	app = sendCommand(t, app, "elevate")
 	if len(app.plan.Today) != 1 {
-		t.Fatalf("expected 1 today item after promote, got %d", len(app.plan.Today))
+		t.Fatalf("expected 1 today item after elevate, got %d", len(app.plan.Today))
 	}
 	if app.plan.Today[0].Text != "Write tests" {
-		t.Errorf("expected promoted text 'Write tests', got %q", app.plan.Today[0].Text)
+		t.Errorf("expected elevated text 'Write tests', got %q", app.plan.Today[0].Text)
 	}
-	assertStatus(t, app, "Promoted")
+	assertStatus(t, app, "Elevated")
+}
+
+// :promote no longer falls back to the breakdown-item flow when run
+// outside the hibana section. Asserting the rejection so we don't
+// regress and re-introduce the dual behavior.
+func TestPromoteOutsideHibanaIsRejected(t *testing.T) {
+	app := newTestApp()
+	app = sendCommand(t, app, "plan")
+	app = sendCommand(t, app, `goal "Ship v1"`)
+	app = sendCommand(t, app, `sub "Write tests"`)
+	app = sendKeys(t, app, "j")
+
+	app = sendCommand(t, app, "promote")
+	if len(app.plan.Today) != 0 {
+		t.Errorf(":promote outside hibana should not move anything; got %d today items", len(app.plan.Today))
+	}
+	// Status should hint at the right command rather than silently doing nothing.
+	assertStatus(t, app, "hibana")
 }
 
 // Test 43: :done toggles today item by cursor

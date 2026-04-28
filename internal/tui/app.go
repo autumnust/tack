@@ -975,6 +975,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdSub(cmd.Args)
 	case "promote":
 		return m.cmdPromote(cmd.Args)
+	case "elevate":
+		return m.cmdElevate(cmd.Args)
 	case "ship":
 		return m.cmdShip(cmd.Args)
 	case "del", "delete":
@@ -1482,7 +1484,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
 		"  " + key(":promote N") + "Promote hibana note → today (vim edit pass)",
-		"  " + key(":promote") + "Promote breakdown item to today (legacy)",
+		"  " + key(":elevate") + "Elevate breakdown item under week-focus → today",
 		"  " + key(":ship N") + "Ship today row → issue + tmux session",
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
 		"  " + key(":done / :done N") + "Toggle done",
@@ -2151,38 +2153,36 @@ func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// cmdPromote is `:promote N` — graduates a hibana note to a today todo
+// via a vim edit pass. Only operates on the hibana panel. To move a
+// week-focus breakdown sub-item to today, use `:elevate` instead.
 func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
-	// New behavior: `:promote N` (or with cursor on a hibana row) opens
-	// vim with the note's text and, on save, creates a today todo +
-	// deletes the hibana row. Falls back to the legacy breakdown-item
-	// promote when no arg is given AND the cursor isn't on a hibana row.
-	if m.planView.section == sectionHibana || (len(args) > 0 && resolveHibanaIdx(args, &m) >= 0) {
-		idx := resolveHibanaIdx(args, &m)
-		if idx < 0 || idx >= len(m.plan.Scratch) {
-			m.statusMsg = "Usage: :promote <N> (1-indexed into hibana panel)"
-			return m, nil
-		}
-		text := m.plan.Scratch[idx].Text
-		return m.launchEditorForPurpose(text, editorPurposePromote, idx, "tack-promote-*.md")
-	}
-
-	// Legacy: promote a week-focus breakdown sub-item to today.
-	sub, _, ok := m.planView.PromoteItem()
-	if !ok {
-		m.statusMsg = "Navigate to a hibana row or breakdown item to promote"
+	idx := resolveHibanaIdx(args, &m)
+	if idx < 0 || idx >= len(m.plan.Scratch) {
+		m.statusMsg = "Usage: :promote <N> (1-indexed into hibana panel). To move a breakdown item to today, use :elevate."
 		return m, nil
 	}
+	text := m.plan.Scratch[idx].Text
+	return m.launchEditorForPurpose(text, editorPurposePromote, idx, "tack-promote-*.md")
+}
 
-	// Mark as done in breakdown
+// cmdElevate is the legacy "lift a week-focus breakdown sub-item into
+// today" flow, formerly the no-arg form of `:promote`. Renamed so the
+// two motions don't share a verb.
+func (m AppModel) cmdElevate(args []string) (tea.Model, tea.Cmd) {
+	_ = args // no args today; reserved
+	sub, _, ok := m.planView.PromoteItem()
+	if !ok {
+		m.statusMsg = "Navigate to a breakdown item under week focus to elevate"
+		return m, nil
+	}
 	sub.Done = true
-
-	// Add to Today
 	m.plan.Today = append(m.plan.Today, model.TodoItem{
 		Text:     sub.Text,
 		IssueNum: sub.IssueNum,
 	})
 	m.planView.SetData(m.plan, m.project)
-	m.statusMsg = fmt.Sprintf("Promoted to today: %s", sub.Text)
+	m.statusMsg = fmt.Sprintf("Elevated to today: %s", sub.Text)
 	return m, nil
 }
 
