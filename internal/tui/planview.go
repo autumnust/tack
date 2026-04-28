@@ -695,7 +695,7 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 		title := item.Text
 		if pi := m.resolveIssue(item.IssueNum); pi != nil {
 			title = pi.Title
-			status = "  " + renderStatus(pi.Status)
+			status = "  " + renderStatus(pi.Status, pi.State)
 		}
 		subCount := ""
 		if len(item.SubItems) > 0 {

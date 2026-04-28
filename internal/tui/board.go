@@ -327,7 +327,7 @@ func (b *BoardModel) View(width, height int) string {
 			done := isDone(item.issue.Status, item.issue.State)
 			num := issueNumStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
 			title := truncate(item.issue.Title, width-30)
-			status := renderStatus(item.issue.Status)
+			status := renderStatus(item.issue.Status, item.issue.State)
 			if done {
 				doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
 				num = doneStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
@@ -380,11 +380,18 @@ func (b *BoardModel) notesForIssue(num int) []string {
 	return nil
 }
 
-func renderStatus(status string) string {
+// renderStatus is the single source of truth for what a project item's
+// status looks like in the board / planview. A closed GitHub issue is
+// authoritatively done regardless of what the project's Status field
+// says — issues commonly get closed without anyone moving them on the
+// project board, and the user's mental model is "if it's closed it's
+// done." Anything still open uses the project Status verbatim.
+func renderStatus(status, state string) string {
+	if isDone(status, state) {
+		return statusStyle("Done").Render("● Done")
+	}
 	s := statusStyle(status)
 	switch strings.ToLower(status) {
-	case "done":
-		return s.Render("● Done")
 	case "in progress":
 		return s.Render("● In Progress")
 	case "in review":
@@ -399,9 +406,15 @@ func renderStatus(status string) string {
 	}
 }
 
+// isDone reports whether a project item should be treated as completed.
+// It is case-insensitive on both arguments so values from any source
+// (GitHub returns "CLOSED"; some surfaces normalize to "closed";
+// project Status is human-set and may be "Done"/"done"/"DONE")
+// converge to the same answer.
 func isDone(status, state string) bool {
-	lower := strings.ToLower(status)
-	return lower == "done" || lower == "closed" || state == "closed"
+	st := strings.ToLower(state)
+	stat := strings.ToLower(status)
+	return st == "closed" || stat == "done" || stat == "closed"
 }
 
 func truncate(s string, max int) string {

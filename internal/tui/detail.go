@@ -233,14 +233,10 @@ func (m DetailModel) renderNavSection(width int) string {
 			title = issueTitleStyle.Render(title)
 		}
 
-		status := ""
-		if ni.Status != "" {
-			status = renderStatus(ni.Status)
-		} else if ni.State == "closed" {
-			status = renderStatus("Done")
-		} else {
-			status = renderStatus("")
-		}
+		// renderStatus collapses the status+state semantics itself —
+		// a closed issue always renders as Done regardless of its
+		// project Status field.
+		status := renderStatus(ni.Status, ni.State)
 
 		assignees := ""
 		if len(ni.Assignees) > 0 {
@@ -263,7 +259,7 @@ func (m DetailModel) View(width int) string {
 		sb.WriteString("\n")
 
 		meta := []string{
-			fmt.Sprintf("Status: %s", renderStatus(m.issue.Status)),
+			fmt.Sprintf("Status: %s", renderStatus(m.issue.Status, m.issue.State)),
 			fmt.Sprintf("Repo: %s", m.issue.Repo),
 		}
 		if len(m.issue.Assignees) > 0 {
@@ -336,7 +332,7 @@ func renderDetail(issue *model.ProjectItem, width int, allItems []model.ProjectI
 			}
 			num := issueNumStyle.Render(fmt.Sprintf("#%d", child.Number))
 			title := issueTitleStyle.Render(child.Title)
-			status := renderStatus(child.Status)
+			status := renderStatus(child.Status, child.State)
 			assignees := ""
 			if len(child.Assignees) > 0 {
 				assignees = detailMetaStyle.Render(fmt.Sprintf(" (%s)", strings.Join(child.Assignees, ", ")))
