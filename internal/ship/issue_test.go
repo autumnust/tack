@@ -37,10 +37,19 @@ func (f *fakeGH) RunStdin(stdin []byte, args ...string) ([]byte, error) {
 
 func (f *fakeGH) match(args []string, _ []byte) ([]byte, error) {
 	joined := strings.Join(args, " ")
+	// Prefer the longest matching prefix so `issue view 100` beats `issue view`.
+	bestLen := -1
+	var best ghResp
+	matched := false
 	for prefix, r := range f.resp {
-		if strings.HasPrefix(joined, prefix) {
-			return r.out, r.err
+		if strings.HasPrefix(joined, prefix) && len(prefix) > bestLen {
+			bestLen = len(prefix)
+			best = r
+			matched = true
 		}
+	}
+	if matched {
+		return best.out, best.err
 	}
 	return nil, nil
 }
