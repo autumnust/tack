@@ -318,6 +318,27 @@ func TestPlanLineJump(t *testing.T) {
 	assertStatus(t, app, "Jumped to line 2")
 }
 
+func TestTodayItem_RendersIssueMarkerWhenShipped(t *testing.T) {
+	plan := &model.Plan{
+		Today: []model.TodoItem{
+			{Text: "shipped task", IssueNum: 28151},
+			{Text: "unshipped task"},
+		},
+	}
+	m := NewPlanViewModel(plan, nil) // nil project — issue not resolvable
+	m.SetSection(sectionToday)
+	m.SetSize(120, 30)
+	out := m.View(120, 30)
+	if !strings.Contains(out, "#28151") {
+		t.Errorf("expected #28151 marker on shipped today row\n--- got ---\n%s", out)
+	}
+	// The unshipped row's text must still appear and must not have a #
+	// prepended to it.
+	if !strings.Contains(out, "unshipped task") {
+		t.Errorf("unshipped task missing from view\n--- got ---\n%s", out)
+	}
+}
+
 func TestWeekdaysBetween(t *testing.T) {
 	// 2026-04-10 is a Friday, 2026-04-13 is Monday
 	fri := time.Date(2026, 4, 10, 9, 0, 0, 0, time.Local)

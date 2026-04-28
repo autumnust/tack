@@ -801,6 +801,10 @@ func (m PlanViewModel) renderTodoItem(cursor string, idx int) string {
 	if item.IssueNum > 0 {
 		if pi := m.resolveIssue(item.IssueNum); pi != nil {
 			text = fmt.Sprintf("#%d %s", item.IssueNum, pi.Title)
+		} else {
+			// Project not loaded yet (or item not in this project) — still
+			// surface the marker so the user knows the row is shipped.
+			text = fmt.Sprintf("#%d %s", item.IssueNum, item.Text)
 		}
 	}
 
