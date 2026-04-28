@@ -38,17 +38,29 @@ func CreateSession(ssh SSHRunner, host, name, repoPath string, ticket IssueRef) 
 		NotesPathTBD: true, // v1 always; v2 flips this once `ts new --issue` lands
 	}
 
-	// `ts new <name>` is run from the repo working tree so the new tmux
-	// session inherits that as its cwd. We `cd` first instead of using
-	// any flag because we don't know the ts CLI shape on every host yet.
+	// Build the inner shell script. We chain `; tmux has-session -t
+	// <name>` after `ts new` so that the final exit code reflects
+	// whether the session ended up existing — not whether `ts new`
+	// returned zero. This matters because `ts new` ends with
+	// `tmux attach-session`, which fails on a non-interactive ssh
+	// ("open terminal failed: not a terminal") even though the session
+	// was already created in a prior step. From the user's POV the
+	// session is up; tack should treat it that way.
 	//
-	// shellQuotePath wraps the repo path so a leading ~ still expands —
-	// sh doesn't expand tildes inside any kind of quoting, so the
-	// original `cd '~/work/kumo'` form silently failed with
-	// "No such file or directory." We rewrite ~ to $HOME (which is set
-	// both locally and on every reasonable remote host) and use double
-	// quotes so $HOME expands.
-	createCmd := fmt.Sprintf(`cd %s && ts new %s`, shellQuotePath(repoPath), shellQuote(name))
+	// shellQuotePath handles the leading-`~` case for the repo path.
+	// shellQuote handles arbitrary content (the session name).
+	var inner string
+	if repoPath == "" {
+		inner = fmt.Sprintf("ts new %s; tmux has-session -t %s", shellQuote(name), shellQuote(name))
+	} else {
+		inner = fmt.Sprintf("cd %s && ts new %s; tmux has-session -t %s",
+			shellQuotePath(repoPath), shellQuote(name), shellQuote(name))
+	}
+	// Wrap in `bash -lc` so PATH includes the user's ~/bin (where `ts`
+	// usually lives). Plain non-interactive ssh doesn't source
+	// .bash_profile / .profile, so $HOME/bin would not be on PATH
+	// without the login-shell wrapper.
+	createCmd := fmt.Sprintf("bash -lc %s", shellQuote(inner))
 	if _, err := ssh.Run(host, createCmd); err != nil {
 		return res, fmt.Errorf("ts new %s on %s: %w", name, host, err)
 	}

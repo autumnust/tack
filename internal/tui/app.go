@@ -2241,7 +2241,7 @@ func (m AppModel) cmdShipToday(args []string) (tea.Model, tea.Cmd) {
 
 	tpl := ship.RenderTemplate(m.plan.Today[idx], ship.RenderOptions{
 		DefaultRepo: defaultShipRepo(m.config),
-		DefaultHost: "local",
+		DefaultHost: "aws",
 	})
 	return m.launchEditorForPurpose(tpl, editorPurposeShip, idx, "tack-ship-*.md")
 }
@@ -2267,8 +2267,15 @@ func (m AppModel) cmdShipBoard(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	host := "local"
-	repoPath := ship.ResolveRepoPath(m.config.Repos, issue.Repo)
+	// Default to aws — that's where actual work runs. If the user's
+	// `repos:` config has an explicit entry for this issue's repo,
+	// use it; otherwise leave the path empty so `ts new` runs from
+	// the host's default cwd (no fragile fallback to ~/work/<base>).
+	host := "aws"
+	repoPath := ""
+	if p, ok := m.config.Repos[issue.Repo]; ok && p != "" {
+		repoPath = p
+	}
 	sessionName := fmt.Sprintf("%d-%s", issue.Number, slug)
 	ticket := ship.IssueRef{Repo: issue.Repo, Number: issue.Number}
 

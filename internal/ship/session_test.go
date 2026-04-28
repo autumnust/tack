@@ -116,6 +116,65 @@ func TestCreateSession_TildePathExpands(t *testing.T) {
 	}
 }
 
+// An empty repoPath means "don't cd — just run ts new from whatever
+// the host's default cwd is." This is the simplest behavior for the
+// common case where the user doesn't care about the session's starting
+// directory; tilde expansion + repo-path config become unnecessary.
+func TestCreateSession_EmptyRepoSkipsCD(t *testing.T) {
+	ssh := &fakeSSH{}
+	ref := IssueRef{Number: 28400, Repo: "kumo-ai/kumo"}
+	if _, err := CreateSession(ssh, "aws", "28400-multi", "", ref); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cmd := ssh.calls[0].cmd
+	// `cd` should not appear as the first action. (`tmux has-session`
+	// uses session-name targeting, not paths, so any literal `cd ` we
+	// see here is the bug.)
+	if strings.Contains(cmd, "cd \"") || strings.Contains(cmd, "cd '") {
+		t.Errorf("empty repoPath should skip `cd`, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "ts new") || !strings.Contains(cmd, "28400-multi") {
+		t.Errorf("expected `ts new 28400-multi`, got %q", cmd)
+	}
+}
+
+// The remote shell over plain SSH is non-interactive and may not have
+// the user's ~/bin on PATH. Wrapping the command in `bash -lc` forces
+// a login shell, which sources .bash_profile / .profile, which puts
+// ~/bin on PATH, which is where `ts` lives.
+func TestCreateSession_WrapsInLoginShell(t *testing.T) {
+	ssh := &fakeSSH{}
+	ref := IssueRef{Number: 28400, Repo: "kumo-ai/kumo"}
+	if _, err := CreateSession(ssh, "aws", "28400-multi", "", ref); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cmd := ssh.calls[0].cmd
+	if !strings.HasPrefix(cmd, "bash -lc ") {
+		t.Errorf("command should start with `bash -lc`, got %q", cmd)
+	}
+}
+
+// `ts new` ends with `tmux attach-session`, which fails under plain
+// non-interactive ssh ("open terminal failed: not a terminal"). The
+// session itself is created BEFORE the attach attempt, so the right
+// success signal is "did the session end up existing?", not "did
+// `ts new` exit zero?". Implementation chains `; tmux has-session -t
+// <name>` after `ts new` so the final exit code reflects existence.
+func TestCreateSession_TolerantOfAttachFailure(t *testing.T) {
+	ssh := &fakeSSH{}
+	ref := IssueRef{Number: 28400, Repo: "kumo-ai/kumo"}
+	if _, err := CreateSession(ssh, "aws", "28400-multi", "", ref); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cmd := ssh.calls[0].cmd
+	if !strings.Contains(cmd, "tmux has-session") {
+		t.Errorf("expected post-create `tmux has-session` check, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "28400-multi") {
+		t.Errorf("has-session check should target session name, got %q", cmd)
+	}
+}
+
 var errSSHFake = &sshErr{msg: "ssh down"}
 
 type sshErr struct{ msg string }

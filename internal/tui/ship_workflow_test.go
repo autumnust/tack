@@ -342,6 +342,9 @@ func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 	if len(ssh.calls) != 1 {
 		t.Fatalf("expected 1 ssh call, got %d: %+v", len(ssh.calls), ssh.calls)
 	}
+	if ssh.calls[0].host != "aws" {
+		t.Errorf("default board-mode host should be aws, got %q", ssh.calls[0].host)
+	}
 	if !strings.Contains(ssh.calls[0].cmd, "ts new") {
 		t.Errorf("ssh cmd should run ts new, got %q", ssh.calls[0].cmd)
 	}
@@ -354,8 +357,8 @@ func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 	if !strings.Contains(app.statusMsg, "Shipped #28151") {
 		t.Errorf("status = %q, want 'Shipped #28151...'", app.statusMsg)
 	}
-	if !strings.Contains(app.statusMsg, "28151-multicat") {
-		t.Errorf("status missing 28151-multicat: %q", app.statusMsg)
+	if !strings.Contains(app.statusMsg, "aws:28151-multicat") {
+		t.Errorf("status missing aws:28151-multicat: %q", app.statusMsg)
 	}
 }
 
