@@ -1,0 +1,787 @@
+{
+  "version": "1.0.0",
+  "gitCommitHash": "9af3633913775b3fa9bb7fcd815d8809d4c334d4",
+  "generatedAt": "2026-05-01T22:34:59.946Z",
+  "files": {
+    ".agents/scripts/sync-skills-catalog.py": {
+      "filePath": ".agents/scripts/sync-skills-catalog.py",
+      "contentHash": "acd61d36c828d998928be2001859533ea74654ce7a31540bca7c80a4f7d1e4d4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 579,
+      "hasStructuralAnalysis": false
+    },
+    "AGENTS.md": {
+      "filePath": "AGENTS.md",
+      "contentHash": "9756ba57f2956cfb73bdfb99ff5347e9a8cda848d3605da69f0eea40e209335f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 18,
+      "hasStructuralAnalysis": true
+    },
+    "CONTRIBUTING.md": {
+      "filePath": "CONTRIBUTING.md",
+      "contentHash": "157b5e2a8e579e18904078a0ed4e386e98723abf97526d46ffc7af6eb6192ec3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 82,
+      "hasStructuralAnalysis": true
+    },
+    "Makefile": {
+      "filePath": "Makefile",
+      "contentHash": "fbc3181e3b0722997091d88b548a4cad6baec8d1e4ee9ddb1a088cdf81371055",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 25,
+      "hasStructuralAnalysis": true
+    },
+    "SETUP.md": {
+      "filePath": "SETUP.md",
+      "contentHash": "310521e1dea40697fc0acbe54613ef5b6cce3a9b63df76c4bf72196852cfdc83",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 162,
+      "hasStructuralAnalysis": true
+    },
+    "config.yaml": {
+      "filePath": "config.yaml",
+      "contentHash": "18e01ce0f2a5f707d4c0d74001b883b9e19aa1df56d87e1bf825b8add8c644d6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 32,
+      "hasStructuralAnalysis": true
+    },
+    "docs/notion-integration.md": {
+      "filePath": "docs/notion-integration.md",
+      "contentHash": "3ab0a24edb968a7c0f63d3ad0e4d16e6fc4c20c8098531af3438caab3dc54865",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 192,
+      "hasStructuralAnalysis": true
+    },
+    "docs/promote-ship-workflow.md": {
+      "filePath": "docs/promote-ship-workflow.md",
+      "contentHash": "65ead438a7dac6948d8509327af3b3432832508f5cf14805cf1ed3945c889261",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 268,
+      "hasStructuralAnalysis": true
+    },
+    "go.mod": {
+      "filePath": "go.mod",
+      "contentHash": "660944f630278c954f8a4a8e5aa83d3ea3e0f316f9b873048bf922b1b177a9f1",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 47,
+      "hasStructuralAnalysis": false
+    },
+    "go.sum": {
+      "filePath": "go.sum",
+      "contentHash": "144ee87d464d1697f944f902c1e61b16571a1543171dc6b8b65f722bcbd29f8d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 94,
+      "hasStructuralAnalysis": false
+    },
+    "internal/cache/cache.go": {
+      "filePath": "internal/cache/cache.go",
+      "contentHash": "7d3c40327029aa16b25a9801e2ba17d717604ce7c6d36097e63e833b87fc400e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 144,
+      "hasStructuralAnalysis": false
+    },
+    "internal/cache/cache_test.go": {
+      "filePath": "internal/cache/cache_test.go",
+      "contentHash": "b3360e40aefc5caba9f23d6352093c4fef0fa61ced43e32cc6f2a4e27e350689",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 221,
+      "hasStructuralAnalysis": false
+    },
+    "internal/github/client.go": {
+      "filePath": "internal/github/client.go",
+      "contentHash": "f6e18dd589d1580e627fb205c07390114cda4588c33353c5135f4980201def6d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 118,
+      "hasStructuralAnalysis": false
+    },
+    "internal/github/client_test.go": {
+      "filePath": "internal/github/client_test.go",
+      "contentHash": "73d46026c24c7d9b924b38ec25f54dc373ede82bbf305725e55e93a9b7391798",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 134,
+      "hasStructuralAnalysis": false
+    },
+    "internal/github/mutations.go": {
+      "filePath": "internal/github/mutations.go",
+      "contentHash": "a3470d6ae9b76ef88f14c8cf87bece55d9c0817659936696f985959aff1e296d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 108,
+      "hasStructuralAnalysis": false
+    },
+    "internal/github/queries.go": {
+      "filePath": "internal/github/queries.go",
+      "contentHash": "4fed645a65103418caff4a641e67a245e50f2477421bdbefd5fc29f26d343cff",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 474,
+      "hasStructuralAnalysis": false
+    },
+    "internal/github/queries_test.go": {
+      "filePath": "internal/github/queries_test.go",
+      "contentHash": "432b2f079b5edd4e6a652f17db3d16496ceb32962d9611a293d0764ebf9df535",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 195,
+      "hasStructuralAnalysis": false
+    },
+    "internal/grouping/strategy.go": {
+      "filePath": "internal/grouping/strategy.go",
+      "contentHash": "b31dd3648bb6f7c62707287bf8ef0ebfb720087f0cb64e27a892003076d285ac",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 213,
+      "hasStructuralAnalysis": false
+    },
+    "internal/grouping/strategy_test.go": {
+      "filePath": "internal/grouping/strategy_test.go",
+      "contentHash": "715c75eab26bcc071598e30fc999123f5fb126ab911708eafcd42427b84ccf5e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 295,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/event.go": {
+      "filePath": "internal/hibana/event.go",
+      "contentHash": "8bd601e2c12709b9ac53c8e4d7845596c615c765849bf1c8e4f0deddfd56f020",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 73,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/event_test.go": {
+      "filePath": "internal/hibana/event_test.go",
+      "contentHash": "73655d48138456abf2d74edac21ca2a55a8f62a5a48ae9ee7c0f9ce1199f1bb5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 62,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/fake_backend_test.go": {
+      "filePath": "internal/hibana/fake_backend_test.go",
+      "contentHash": "ce723a98e9a7865eb4dd102f350334226ad2a4bf748c40ed79d9af346b8c5070",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 196,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/fold.go": {
+      "filePath": "internal/hibana/fold.go",
+      "contentHash": "0511a2e4c6b7eae90463aef6060bf5a1f189335eb151f9ca44e16024fe759a02",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 76,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/fold_test.go": {
+      "filePath": "internal/hibana/fold_test.go",
+      "contentHash": "18bfa8e2dadcf5eff367d427eab719971f788609e0da4380e2fb36957be73852",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 118,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/id.go": {
+      "filePath": "internal/hibana/id.go",
+      "contentHash": "e8c0c4245a1bd6e97e5962611c0424fe75f62b7c6fdc345d60e00ddb3de3e040",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 97,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/id_test.go": {
+      "filePath": "internal/hibana/id_test.go",
+      "contentHash": "b705c33ec60775e94676db403a2d3faf9c92e325caecf21e6f35d2c19b6fabb4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 105,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/log.go": {
+      "filePath": "internal/hibana/log.go",
+      "contentHash": "2e6f25bab8036c58d3365be1ec04968bc78d7686e431f0996c3a480faec4eee9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 283,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/log_test.go": {
+      "filePath": "internal/hibana/log_test.go",
+      "contentHash": "0a1d52fb1fe7cff73e0cef67cded03f0a099e88023436f286a504fe1ec1c81ca",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 282,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/migrate.go": {
+      "filePath": "internal/hibana/migrate.go",
+      "contentHash": "995fc2e916f7dceb7970cf9bf95dc937cd039721862bff18e4b723f5e7ca1a09",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 254,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/migrate_test.go": {
+      "filePath": "internal/hibana/migrate_test.go",
+      "contentHash": "7acbc29ba63e0a04fab21c4c98ab64ba9a487a1188949e7312f82c85f7c759de",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 241,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/redis.go": {
+      "filePath": "internal/hibana/redis.go",
+      "contentHash": "7710a32de607c5005dfc3bad23f6956bccacc7b092cc46d5e38589aeb3fe9f0c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 187,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/store.go": {
+      "filePath": "internal/hibana/store.go",
+      "contentHash": "7b6314105bf352b1ad448e7e21b52bd4776b59c5dd4bf702cbdc4d588e77c297",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 236,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/store_test.go": {
+      "filePath": "internal/hibana/store_test.go",
+      "contentHash": "51484f765154b44ee1fc52c6c881d34493476a53fe2b6b51ff40ca404f1005d1",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 174,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/sync.go": {
+      "filePath": "internal/hibana/sync.go",
+      "contentHash": "aac4631b6a2e763212f62969b895ea97189cc3dae2c0657228fa11ad940ecbc5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 314,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/sync_test.go": {
+      "filePath": "internal/hibana/sync_test.go",
+      "contentHash": "29f67a84e4c8af8c1e40cff5ecc2530cd002cfe47f0360e487b1404a23def028",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 386,
+      "hasStructuralAnalysis": false
+    },
+    "internal/hibana/testhelpers_test.go": {
+      "filePath": "internal/hibana/testhelpers_test.go",
+      "contentHash": "760f67aa6db1d54279dbfbb64bb92ed50918e0437bb202503bece9869a4b5f09",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 40,
+      "hasStructuralAnalysis": false
+    },
+    "internal/model/planning.go": {
+      "filePath": "internal/model/planning.go",
+      "contentHash": "8a152bcc15d721bfa468a70928ccadd4e79092bd269096dfe5d513c7a13b6cdc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 73,
+      "hasStructuralAnalysis": false
+    },
+    "internal/model/types.go": {
+      "filePath": "internal/model/types.go",
+      "contentHash": "4d89d3091ceec00056ab0565420a2036a604faadba6dfa898b337b3a065e9116",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 133,
+      "hasStructuralAnalysis": false
+    },
+    "internal/model/types_test.go": {
+      "filePath": "internal/model/types_test.go",
+      "contentHash": "6e0aab6c22c0661c26426d0484b162c84090c5bf6392de7e89348c7f83598fc9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 67,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/migration.go": {
+      "filePath": "internal/planning/migration.go",
+      "contentHash": "dc91faec8702907409f88d15003e55c65ab1704aff095c3f43cb5f8ea7317751",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 175,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/outbox.go": {
+      "filePath": "internal/planning/outbox.go",
+      "contentHash": "2a36a93f51417d0325abb1d908a508219e460bfe8843c765e9535362af2c3d03",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 151,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/outbox_test.go": {
+      "filePath": "internal/planning/outbox_test.go",
+      "contentHash": "e7ec443406a4c403251bd49c9b6df665e1a20a8a83c51e4a2942796d37a70593",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 101,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/reconcile.go": {
+      "filePath": "internal/planning/reconcile.go",
+      "contentHash": "5ef3d67672c385f77bd976d8b2ffb00997c0f479d609e5bd7dc4b936b1af10cc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 425,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/reconcile_test.go": {
+      "filePath": "internal/planning/reconcile_test.go",
+      "contentHash": "162c733de5390dca5c5eaa04f1c3a0d15660961861a3599a8595de8a5896a981",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 217,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/redis.go": {
+      "filePath": "internal/planning/redis.go",
+      "contentHash": "19304111393977f1c0405b30069f31420a6d7bc8debe897a12328527eb512f16",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 205,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/redis_backend_test.go": {
+      "filePath": "internal/planning/redis_backend_test.go",
+      "contentHash": "9411d0ba0401365bf1fbba310ca73ddc934588c5ecb972f4879e5f6f69e420f0",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 45,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/redis_live_test.go": {
+      "filePath": "internal/planning/redis_live_test.go",
+      "contentHash": "89f950193a8255782752f3cbc625bf711e251a5ae98b1c6d03d063b8881c4fc4",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 48,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/redis_test.go": {
+      "filePath": "internal/planning/redis_test.go",
+      "contentHash": "4a9ab91efcecf2e8198c08a6fc6c389dd5e78623d17893917f0890cfeca2d7e5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 397,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/store.go": {
+      "filePath": "internal/planning/store.go",
+      "contentHash": "104505e60c3d0639e861a1843b03eb5919f78df146935167ade41364949f930c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 459,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/store_test.go": {
+      "filePath": "internal/planning/store_test.go",
+      "contentHash": "64399109d75150ae31486ce468965c13ec7325a8d0cf2a760b704d3299aaaf14",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 290,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/sync_state.go": {
+      "filePath": "internal/planning/sync_state.go",
+      "contentHash": "199118f81c0051635029a563d86d85544952e538aea8d5a1cd6b23dfe26161ec",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 74,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/syncer.go": {
+      "filePath": "internal/planning/syncer.go",
+      "contentHash": "06555576580a96f5217e79b41ec452f5d70b2a904a177b11338e4ce7393bf812",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 53,
+      "hasStructuralAnalysis": false
+    },
+    "internal/planning/syncer_test.go": {
+      "filePath": "internal/planning/syncer_test.go",
+      "contentHash": "fc7de7989fc4ed750278b1d5ffa86708952769aecbd8990bee053473aef46662",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 249,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/issue.go": {
+      "filePath": "internal/ship/issue.go",
+      "contentHash": "5cfdb575f0fdb56dc7e8bae9fc7fe90d798639f044ca91e71f46b597c89cf8c9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 196,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/issue_test.go": {
+      "filePath": "internal/ship/issue_test.go",
+      "contentHash": "d85ee65a83533de55a20dcaff96ee6dac63c32ee5dc90e0d9505fc82cec3e2f5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 213,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/orchestrate.go": {
+      "filePath": "internal/ship/orchestrate.go",
+      "contentHash": "5e1db6b7acb2c0f8512e0e946ec4061db5deedc5ef7bb3100a3037ffa6c08811",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 138,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/orchestrate_test.go": {
+      "filePath": "internal/ship/orchestrate_test.go",
+      "contentHash": "2dcbcc61bccae647d82569058c17029190c2b3fea71e9f08dcbbfa3640a2c7fd",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 197,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/runner.go": {
+      "filePath": "internal/ship/runner.go",
+      "contentHash": "d54932e303842d37d2cdfe59e1db226419937c45e1ef72a0baf43818230d4319",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 74,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/session.go": {
+      "filePath": "internal/ship/session.go",
+      "contentHash": "b2196af2fa31372e1b1aac788946375da89cb8b78c6cb79817d0e8b0339d7c01",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 113,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/session_test.go": {
+      "filePath": "internal/ship/session_test.go",
+      "contentHash": "c23990e8a08b837af4aee7b5441c596aea20c6ca1973722198ce0e46b85390f1",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 183,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/template.go": {
+      "filePath": "internal/ship/template.go",
+      "contentHash": "5b1081aec6826173225f0acc4b15b52a5819fbabc8d84a63873fddccbf92e83d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 198,
+      "hasStructuralAnalysis": false
+    },
+    "internal/ship/template_test.go": {
+      "filePath": "internal/ship/template_test.go",
+      "contentHash": "6b1c80fa44636d0c2d16be36e0b463e233e05f6ea48b99944ae28fe2c758012b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 328,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/app.go": {
+      "filePath": "internal/tui/app.go",
+      "contentHash": "21b4f6e8f282ef80836061d74622b727ebc10c2dca78c3d001706041afec594b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 3054,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/board.go": {
+      "filePath": "internal/tui/board.go",
+      "contentHash": "0104deef93dbca8eb66f4d466b6c7a5745eea23fa66c8d98c5cadcd9c05b12be",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 430,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/board_status_test.go": {
+      "filePath": "internal/tui/board_status_test.go",
+      "contentHash": "36fe907aa0977af391d5421864101618605b533cddf2a24fbbe4700a1db0ca1a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 62,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/command.go": {
+      "filePath": "internal/tui/command.go",
+      "contentHash": "7ea81418aa8138b3f06d5431a7ddeeca9bd0beacb487efa8773bd0f8113b5410",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 241,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/command_test.go": {
+      "filePath": "internal/tui/command_test.go",
+      "contentHash": "f75828a3e08e29b5b56efa6f0b75ae66128be3966c255c61d262efa0752ca377",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 93,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/config_writer.go": {
+      "filePath": "internal/tui/config_writer.go",
+      "contentHash": "da870091527f2129ee6087f40aba7749e196cc66a022a2905706ffe0f4bbbe71",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 17,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/detail.go": {
+      "filePath": "internal/tui/detail.go",
+      "contentHash": "a2604c471eb7bfe2423f8b6e54a29033053c2f0b7867493359b5151ca11d958d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 476,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/ops.go": {
+      "filePath": "internal/tui/ops.go",
+      "contentHash": "ee5034c7ee35c5bfb00bb9ce223c8e32ff730c6454a56f2f6cc48b7909ae584d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 200,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/ops_test.go": {
+      "filePath": "internal/tui/ops_test.go",
+      "contentHash": "a77fb9889e0600c4ce8e575d77f671fc22f7b3e0ca29aadc49baba75786e963c",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 255,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/planview.go": {
+      "filePath": "internal/tui/planview.go",
+      "contentHash": "6bb000588be94dc21651a12fe7d8e44862d584249aedf75f20733ca76b1be142",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 929,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/planview_test.go": {
+      "filePath": "internal/tui/planview_test.go",
+      "contentHash": "9d3e3f9b3d395203524cda6ac906143c61a4fbbcef274bc8df10924b17c80a31",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 374,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/review.go": {
+      "filePath": "internal/tui/review.go",
+      "contentHash": "d7c3ea1d5fbbe5d03b2d85fe2d2cfb8fc936175887b52e6be77ad22fa98b8d4b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 87,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/ship_workflow_test.go": {
+      "filePath": "internal/tui/ship_workflow_test.go",
+      "contentHash": "3c1bfb0fcee859d8d3e3faba8cc4a471debfa31f39e444929bde11c21e9483e3",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 472,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/styles.go": {
+      "filePath": "internal/tui/styles.go",
+      "contentHash": "3ee4b842b4a5aadbf853c211ad03badcd3cb58a7a5c986d23a54fae1bddfbd7b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 90,
+      "hasStructuralAnalysis": false
+    },
+    "internal/tui/workflow_test.go": {
+      "filePath": "internal/tui/workflow_test.go",
+      "contentHash": "a2c5c2098ebe7bed24d845e7faf57f091331a82e793634f0f61fdd821a10769e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2192,
+      "hasStructuralAnalysis": false
+    },
+    "main.go": {
+      "filePath": "main.go",
+      "contentHash": "a38093b848b722346332c49e762367c1413cc9f0a0b2fcf497e760ab14fa27ad",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 560,
+      "hasStructuralAnalysis": false
+    }
+  }
+}
