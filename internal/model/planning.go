@@ -49,10 +49,13 @@ type ScratchNote struct {
 	UpdatedAt time.Time `yaml:"updated_at,omitempty"`
 }
 
-// MonthlyTarget is a high-level target for the month.
+// MonthlyTarget is a high-level target for the month. Month is the
+// YYYY-MM bucket the target belongs to; older buckets stay in the active
+// plan until they're sealed via :reflect into the Obsidian vault.
 type MonthlyTarget struct {
 	Text      string    `yaml:"text"`
 	Done      bool      `yaml:"done,omitempty"`
+	Month     string    `yaml:"month,omitempty"`
 	CreatedAt time.Time `yaml:"created_at,omitempty"`
 	DoneAt    time.Time `yaml:"done_at,omitempty"`
 }

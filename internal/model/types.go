@@ -9,10 +9,19 @@ type TeamMember struct {
 }
 
 type PlanningConfig struct {
-	Dir          string `yaml:"dir"`
-	MaxWeekFocus int    `yaml:"max_week_focus,omitempty"` // max weekly focus items (default 3)
-	RedisURL     string `yaml:"redis_url,omitempty"`      // Upstash REST URL; also reads UPSTASH_REDIS_REST_URL env
-	RedisToken   string `yaml:"redis_token,omitempty"`    // Upstash REST token; also reads UPSTASH_REDIS_REST_TOKEN env
+	Dir          string         `yaml:"dir"`
+	MaxWeekFocus int            `yaml:"max_week_focus,omitempty"` // max weekly focus items (default 3)
+	RedisURL     string         `yaml:"redis_url,omitempty"`      // Upstash REST URL; also reads UPSTASH_REDIS_REST_URL env
+	RedisToken   string         `yaml:"redis_token,omitempty"`    // Upstash REST token; also reads UPSTASH_REDIS_REST_TOKEN env
+	Obsidian     ObsidianConfig `yaml:"obsidian,omitempty"`
+}
+
+// ObsidianConfig points at an Obsidian vault that receives sealed
+// monthly target reflections. Vault is required; MonthlySubdir defaults
+// to "monthly".
+type ObsidianConfig struct {
+	Vault         string `yaml:"vault"`
+	MonthlySubdir string `yaml:"monthly_subdir,omitempty"`
 }
 
 type Config struct {

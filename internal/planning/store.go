@@ -99,7 +99,26 @@ func (s *Store) LoadPlan() (*model.Plan, error) {
 
 	// Wipe any stale scratch from old YAMLs/blobs so callers don't see it.
 	plan.Scratch = nil
+	backfillMonthlyTargetMonths(plan)
 	return plan, nil
+}
+
+// backfillMonthlyTargetMonths assigns Month=YYYY-MM to any legacy target
+// whose Month field is empty. Falls back to the current month when
+// CreatedAt is also zero. Without this every pre-existing target would
+// look like a "pending reflection" forever.
+func backfillMonthlyTargetMonths(plan *model.Plan) {
+	now := time.Now()
+	for i := range plan.MonthlyTargets {
+		if plan.MonthlyTargets[i].Month != "" {
+			continue
+		}
+		ts := plan.MonthlyTargets[i].CreatedAt
+		if ts.IsZero() {
+			ts = now
+		}
+		plan.MonthlyTargets[i].Month = ts.Format("2006-01")
+	}
 }
 
 func (s *Store) loadPlanRedisOrYAML() (*model.Plan, error) {

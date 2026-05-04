@@ -36,10 +36,11 @@ func sectionName(s planSection) string {
 
 // flatItem represents a single navigable row in the plan view.
 type flatItem struct {
-	section  planSection
-	focusIdx int  // index into WeekFocus (for sub-items, the parent)
-	subIdx   int  // -1 if this is a top-level item, >=0 if sub-item
-	header   bool // true for section divider lines (not selectable)
+	section     planSection
+	focusIdx    int    // index into WeekFocus (for sub-items, the parent)
+	subIdx      int    // -1 if this is a top-level item, >=0 if sub-item
+	header      bool   // true for section divider lines (not selectable)
+	headerLabel string // custom header text; overrides the default "Research"
 }
 
 type PlanViewModel struct {
@@ -188,11 +189,52 @@ func (m *PlanViewModel) rebuildFlat() {
 			}
 		}
 	case sectionMonthlyTarget:
+		current := time.Now().Format("2006-01")
+		// Group target indices by month, then walk pending (older) months
+		// first as pinned sections so the user sees what still owes a
+		// reflection before the current month's working set.
+		groups := map[string][]int{}
+		var months []string
 		for i := range m.plan.MonthlyTargets {
 			if !m.showDone && m.plan.MonthlyTargets[i].Done {
 				continue
 			}
-			m.flatItems = append(m.flatItems, flatItem{section: sectionMonthlyTarget, focusIdx: i, subIdx: -1})
+			month := m.plan.MonthlyTargets[i].Month
+			if month == "" {
+				month = current // defensive — backfill should have set this
+			}
+			if _, seen := groups[month]; !seen {
+				months = append(months, month)
+			}
+			groups[month] = append(groups[month], i)
+		}
+		sort.Strings(months)
+		hasPending := false
+		for _, mo := range months {
+			if mo < current {
+				hasPending = true
+				break
+			}
+		}
+		for _, mo := range months {
+			if hasPending {
+				label := mo
+				if mo < current {
+					label = mo + " — pending reflection (use :reflect to seal)"
+				} else if mo == current {
+					label = mo + " — current"
+				}
+				m.flatItems = append(m.flatItems, flatItem{
+					section:     sectionMonthlyTarget,
+					focusIdx:    -1,
+					subIdx:      -1,
+					header:      true,
+					headerLabel: label,
+				})
+			}
+			for _, i := range groups[mo] {
+				m.flatItems = append(m.flatItems, flatItem{section: sectionMonthlyTarget, focusIdx: i, subIdx: -1})
+			}
 		}
 	}
 	if m.cursorIdx >= len(m.flatItems) {
@@ -509,6 +551,9 @@ func (m *PlanViewModel) View(width, height int) string {
 			count = len(m.plan.MonthlyTargets)
 		}
 		label := fmt.Sprintf("%s (%d)", sectionName(i), count)
+		if i == sectionMonthlyTarget && m.hasPendingMonths() {
+			label = fmt.Sprintf("%s ⚐ (%d)", sectionName(i), count)
+		}
 		if i == m.section {
 			tabs = append(tabs, activeTabStyle.Render(label))
 		} else {
@@ -581,7 +626,11 @@ func (m *PlanViewModel) View(width, height int) string {
 
 func (m PlanViewModel) renderFlatItem(cursor string, fi flatItem) string {
 	if fi.header {
-		label := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("── Research ──")
+		text := fi.headerLabel
+		if text == "" {
+			text = "Research"
+		}
+		label := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("── " + text + " ──")
 		return fmt.Sprintf("  %s\n", label)
 	}
 	switch m.section {
@@ -897,16 +946,23 @@ func hibanaSortTime(note model.ScratchNote) time.Time {
 	return note.CreatedAt
 }
 
+// renderMonthlyTargetItem renders a target the same way hibana renders
+// a note in expanded mode: first line with line number / checkbox / age,
+// continuation lines indented under the prefix in muted color so longer
+// aspirational text can breathe.
 func (m PlanViewModel) renderMonthlyTargetItem(cursor string, idx int) string {
 	item := m.plan.MonthlyTargets[idx]
 	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
 		Render(fmt.Sprintf("%d", idx+1))
 
 	check := "[ ]"
-	textStyle := issueTitleStyle
+	firstStyle := issueTitleStyle
+	contStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	if item.Done {
 		check = "[x]"
-		textStyle = lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
+		doneStyle := lipgloss.NewStyle().Foreground(colorSuccess).Strikethrough(true)
+		firstStyle = doneStyle
+		contStyle = doneStyle
 	}
 
 	age := ""
@@ -916,13 +972,41 @@ func (m PlanViewModel) renderMonthlyTargetItem(cursor string, idx int) string {
 
 	// prefix: cursor(2) + lineNo(3) + space(1) + check(3) + space(1) = 10
 	prefixWidth := 10
-	suffixWidth := lipgloss.Width(age)
 	contentWidth := m.width - prefixWidth
-	lines := splitWrap(item.Text, contentWidth-suffixWidth, contentWidth)
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
 	pad := strings.Repeat(" ", prefixWidth)
-	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(lines[0]), age)
-	for _, l := range lines[1:] {
-		result += pad + textStyle.Render(l) + "\n"
+
+	noteLines := strings.Split(item.Text, "\n")
+	suffixWidth := lipgloss.Width(age)
+	firstWrapped := splitWrap(noteLines[0], contentWidth-suffixWidth, contentWidth)
+	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, firstStyle.Render(firstWrapped[0]), age)
+	for _, l := range firstWrapped[1:] {
+		result += pad + contStyle.Render(l) + "\n"
+	}
+	for _, line := range noteLines[1:] {
+		if line == "" {
+			result += "\n"
+			continue
+		}
+		wrapped := splitWrap(line, contentWidth, contentWidth)
+		for _, wl := range wrapped {
+			result += pad + contStyle.Render(wl) + "\n"
+		}
 	}
 	return result
+}
+
+// hasPendingMonths reports whether any monthly target belongs to a
+// month earlier than the current one — i.e., whether the user owes a
+// reflection. Drives the ⚐ glyph on the Monthly Target tab.
+func (m PlanViewModel) hasPendingMonths() bool {
+	current := time.Now().Format("2006-01")
+	for _, t := range m.plan.MonthlyTargets {
+		if t.Month != "" && t.Month < current {
+			return true
+		}
+	}
+	return false
 }

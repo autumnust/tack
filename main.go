@@ -505,6 +505,24 @@ func loadConfig(path string) (model.Config, error) {
 	if !hasFocus {
 		return model.Config{}, fmt.Errorf("'focus' is required — add global focus issue numbers or per-team-member focus lists")
 	}
+	if config.Planning.Obsidian.Vault == "" {
+		return model.Config{}, fmt.Errorf("'planning.obsidian.vault' is required — point it at your Obsidian vault directory (sealed monthly reflections land in <vault>/<monthly_subdir>)")
+	}
+	vault := config.Planning.Obsidian.Vault
+	if strings.HasPrefix(vault, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			vault = filepath.Join(home, vault[1:])
+		}
+	}
+	if info, err := os.Stat(vault); err != nil {
+		return model.Config{}, fmt.Errorf("planning.obsidian.vault %q: %w", config.Planning.Obsidian.Vault, err)
+	} else if !info.IsDir() {
+		return model.Config{}, fmt.Errorf("planning.obsidian.vault %q is not a directory", config.Planning.Obsidian.Vault)
+	}
+	config.Planning.Obsidian.Vault = vault
+	if config.Planning.Obsidian.MonthlySubdir == "" {
+		config.Planning.Obsidian.MonthlySubdir = "monthly"
+	}
 	return config, nil
 }
 

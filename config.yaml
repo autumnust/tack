@@ -23,6 +23,11 @@ status_field: "Status"
 planning:
   dir: "~/.tack"
   max_week_focus: 3
+  # obsidian: required. Sealed monthly reflections (via :reflect) land in
+  # <vault>/<monthly_subdir>/<YYYY-MM>.md. monthly_subdir defaults to "monthly".
+  obsidian:
+    vault: "~/Documents/obsidian-vault"
+    monthly_subdir: "monthly"
 
 # repos: where each repo is checked out on this host. :ship uses these
 # to set the working tree of the new tmux session. Missing entries fall

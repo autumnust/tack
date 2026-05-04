@@ -49,6 +49,7 @@ type AppModel struct {
 	// Planning
 	planStore   *planning.Store
 	hibanaStore *hibana.Store
+	vault       *planning.VaultWriter
 	plan        *model.Plan
 	annotations *model.Annotations
 
@@ -107,6 +108,7 @@ const (
 	editorPurposePlanItem editorPurpose = iota // default — section/idx/subIdx interpreted
 	editorPurposePromote                        // hibana note → today todo (via vim)
 	editorPurposeShip                           // today todo → ship template
+	editorPurposeReflect                        // monthly target → sealed vault file
 )
 
 type editorFinishedMsg struct {
@@ -122,6 +124,8 @@ type editorFinishedMsg struct {
 	// equals this verbatim, vim never wrote, so the operation aborts
 	// without touching gh / ssh / today / hibana state.
 	originalContent string
+	// month is set for editorPurposeReflect — the YYYY-MM bucket being sealed.
+	month string
 }
 
 const cacheTTL = 5 * time.Minute
@@ -175,6 +179,15 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	} else {
 		app.plan = &model.Plan{}
 		app.annotations = &model.Annotations{}
+	}
+
+	// Obsidian vault is the archive of sealed monthly reflections. It's
+	// validated at config-load, but we still surface a soft error here if
+	// the directory disappears between startup and TUI launch.
+	if vw, err := planning.NewVaultWriter(config.Planning.Obsidian.Vault, config.Planning.Obsidian.MonthlySubdir); err == nil {
+		app.vault = vw
+	} else {
+		app.statusMsg = fmt.Sprintf("Vault unavailable: %s", err)
 	}
 
 	// Hibana lives in the same directory as planning, on its own append-only
@@ -591,6 +604,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.finalizePromote(text, msg.originalContent, msg.idx)
 		case editorPurposeShip:
 			return m.finalizeShip(text, msg.originalContent, msg.idx)
+		case editorPurposeReflect:
+			return m.finalizeReflect(text, msg.originalContent, msg.month)
 		}
 		if msg.personLogin != "" {
 			if m.planStore == nil {
@@ -666,9 +681,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case sectionMonthlyTarget:
 			if msg.idx < 0 {
+				now := time.Now()
 				m.plan.MonthlyTargets = append(m.plan.MonthlyTargets, model.MonthlyTarget{
 					Text:      text,
-					CreatedAt: time.Now(),
+					Month:     now.Format("2006-01"),
+					CreatedAt: now,
 				})
 				m.statusMsg = "Target added"
 			} else if msg.idx < len(m.plan.MonthlyTargets) {
@@ -976,6 +993,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdHibana(cmd.Args)
 	case "target":
 		return m.cmdTarget(cmd.Args)
+	case "reflect":
+		return m.cmdReflect(cmd.Args)
 	case "sub":
 		return m.cmdSub(cmd.Args)
 	case "promote":
@@ -1496,6 +1515,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
 		"  " + key(":target \"text\"") + "Add monthly target",
+		"  " + key(":reflect") + "Seal oldest pending month → Obsidian vault (opens editor)",
 		"  " + key(":mv <tab>") + "Move item to tab (today/goal/hibana/target)",
 		"  " + key(":mv goal N") + "Move item as sub-item of goal #N",
 		"  " + key(":del") + "Delete selected item",
@@ -1920,15 +1940,161 @@ func (m AppModel) cmdTarget(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	text := strings.Join(args, " ")
+	now := time.Now()
 	m.plan.MonthlyTargets = append(m.plan.MonthlyTargets, model.MonthlyTarget{
 		Text:      text,
-		CreatedAt: time.Now(),
+		Month:     now.Format("2006-01"),
+		CreatedAt: now,
 	})
 	m.planView.SetData(m.plan, m.project)
 	m.planView.SetSection(sectionMonthlyTarget)
 	m.view = viewPlan
 	m.statusMsg = "Monthly target added"
 	return m, nil
+}
+
+// cmdReflect opens an editor for the oldest unsealed month, pre-filled
+// with its targets and an empty Reflection section. On save with a
+// reflection ≥ planning.MinReflectionChars non-whitespace chars, the
+// month is sealed into the Obsidian vault and its targets drop out of
+// the active plan.
+func (m AppModel) cmdReflect(args []string) (tea.Model, tea.Cmd) {
+	_ = args // no args today; reserved for `:reflect 2026-04` to pick a specific month
+	if m.vault == nil {
+		m.statusMsg = "Vault unavailable — check planning.obsidian.vault in your config"
+		return m, nil
+	}
+	current := planning.CurrentMonth()
+	pending := planning.PendingMonths(m.plan.MonthlyTargets, current)
+	if len(pending) == 0 {
+		m.statusMsg = "Nothing to reflect on — no months pending."
+		return m, nil
+	}
+	month := pending[0]
+	tpl := buildReflectionTemplate(month, m.plan.MonthlyTargets)
+	return m.launchReflectEditor(tpl, month)
+}
+
+func buildReflectionTemplate(month string, targets []model.MonthlyTarget) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# Reflection: %s\n\n", month)
+	sb.WriteString("## Targets\n")
+	any := false
+	for _, t := range targets {
+		if t.Month != month {
+			continue
+		}
+		any = true
+		check := "[ ]"
+		if t.Done {
+			check = "[x]"
+		}
+		text := strings.ReplaceAll(strings.TrimSpace(t.Text), "\n", " ")
+		fmt.Fprintf(&sb, "- %s %s\n", check, text)
+	}
+	if !any {
+		sb.WriteString("- (none)\n")
+	}
+	sb.WriteString("\n## Reflection\n")
+	sb.WriteString("<!-- write at least 10 chars below; save to seal, :q! to abort -->\n\n")
+	return sb.String()
+}
+
+func (m AppModel) launchReflectEditor(text, month string) (tea.Model, tea.Cmd) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vim"
+	}
+	f, err := os.CreateTemp("", "tack-reflect-*.md")
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating temp file: %s", err)
+		return m, nil
+	}
+	tmpFile := f.Name()
+	if text != "" {
+		_, _ = f.WriteString(text)
+	}
+	_ = f.Close()
+
+	c := exec.Command(editor, tmpFile)
+	original := text
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{
+			tmpPath:         tmpFile,
+			purpose:         editorPurposeReflect,
+			month:           month,
+			err:             err,
+			originalContent: original,
+		}
+	})
+}
+
+// finalizeReflect handles a saved :reflect edit. Aborts on `:q!` (file
+// equals the prefilled template) or on a reflection that's too short.
+// Otherwise: writes the sealed file into the vault, drops every target
+// in `month` from the active plan, and persists the plan.
+func (m AppModel) finalizeReflect(text, original, month string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == strings.TrimSpace(original) || strings.TrimSpace(text) == "" {
+		m.statusMsg = "Reflection canceled."
+		return m, nil
+	}
+	reflection := extractReflection(text)
+	if planning.CountNonWhitespace(reflection) < planning.MinReflectionChars {
+		m.statusMsg = fmt.Sprintf("Reflection too short — write at least %d non-whitespace chars under ## Reflection.", planning.MinReflectionChars)
+		return m, nil
+	}
+	if m.vault == nil {
+		m.statusMsg = "Vault unavailable — reflection not sealed."
+		return m, nil
+	}
+	var sealed []model.MonthlyTarget
+	var kept []model.MonthlyTarget
+	for _, t := range m.plan.MonthlyTargets {
+		if t.Month == month {
+			sealed = append(sealed, t)
+		} else {
+			kept = append(kept, t)
+		}
+	}
+	if err := m.vault.SealMonth(month, sealed, reflection); err != nil {
+		m.statusMsg = fmt.Sprintf("Seal failed: %s", err)
+		return m, nil
+	}
+	m.plan.MonthlyTargets = kept
+	if m.planStore != nil {
+		_ = m.planStore.SavePlan(m.plan)
+	}
+	m.planView.SetData(m.plan, m.project)
+	m.planView.SetSection(sectionMonthlyTarget)
+	m.view = viewPlan
+	m.statusMsg = fmt.Sprintf("Sealed %s → %s", month, m.vault.FilePath(month))
+	return m, nil
+}
+
+// extractReflection returns everything under the first "## Reflection"
+// heading, stripped of HTML comments (the placeholder hint).
+func extractReflection(buf string) string {
+	idx := strings.Index(buf, "## Reflection")
+	if idx < 0 {
+		return ""
+	}
+	rest := buf[idx+len("## Reflection"):]
+	// Drop HTML comments — the prefilled hint lives in one.
+	for {
+		start := strings.Index(rest, "<!--")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(rest[start:], "-->")
+		if end < 0 {
+			break
+		}
+		rest = rest[:start] + rest[start+end+len("-->"):]
+	}
+	return strings.TrimSpace(rest)
 }
 
 func (m AppModel) openPlanEditor() (tea.Model, tea.Cmd) {
