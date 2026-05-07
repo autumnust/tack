@@ -444,6 +444,90 @@ func (s *Store) HasPersonNote(login string) bool {
 	return err == nil && info.Size() > 0
 }
 
+// resolvedMarker is the trailing token on a `## ` heading line that marks
+// a single 1v1 note (one date section) as resolved. Stored in the heading
+// itself so the markdown stays self-describing — a user editing the file
+// in vim can toggle resolution by hand and the board reflects it.
+const resolvedMarker = "✓"
+
+// HasUnresolvedPersonNote reports whether login has at least one 1v1 note
+// section that is not yet resolved. A `## ` heading whose trimmed text
+// ends with the resolved marker is considered done; everything else
+// (including a non-empty file with no `## ` headings at all) is treated
+// as unresolved so the board still surfaces the icon.
+func (s *Store) HasUnresolvedPersonNote(login string) bool {
+	body, err := s.LoadPersonNote(login)
+	if err != nil || strings.TrimSpace(body) == "" {
+		return false
+	}
+	sawHeading := false
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "## ") {
+			continue
+		}
+		sawHeading = true
+		if !isResolvedHeading(line) {
+			return true
+		}
+	}
+	// Non-empty body with no `## ` headings: legacy/freeform note — count
+	// as unresolved so the user doesn't lose the signal silently.
+	return !sawHeading
+}
+
+// ResolvePersonNote marks every `## ` heading in login's note as resolved
+// by appending the resolved marker. Returns the number of headings newly
+// resolved (already-resolved headings and headerless files are no-ops).
+func (s *Store) ResolvePersonNote(login string) (int, error) {
+	return s.rewritePersonNoteHeadings(login, true)
+}
+
+// UnresolvePersonNote is the inverse of ResolvePersonNote.
+func (s *Store) UnresolvePersonNote(login string) (int, error) {
+	return s.rewritePersonNoteHeadings(login, false)
+}
+
+func (s *Store) rewritePersonNoteHeadings(login string, resolve bool) (int, error) {
+	body, err := s.LoadPersonNote(login)
+	if err != nil {
+		return 0, err
+	}
+	if body == "" {
+		return 0, nil
+	}
+	lines := strings.Split(body, "\n")
+	changed := 0
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "## ") {
+			continue
+		}
+		already := isResolvedHeading(line)
+		if resolve && !already {
+			lines[i] = strings.TrimRight(line, " \t") + " " + resolvedMarker
+			changed++
+		} else if !resolve && already {
+			lines[i] = stripResolvedMarker(line)
+			changed++
+		}
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	return changed, s.SavePersonNote(login, strings.Join(lines, "\n"))
+}
+
+func isResolvedHeading(line string) bool {
+	return strings.HasSuffix(strings.TrimRight(line, " \t"), " "+resolvedMarker)
+}
+
+func stripResolvedMarker(line string) string {
+	trimmed := strings.TrimRight(line, " \t")
+	if !strings.HasSuffix(trimmed, " "+resolvedMarker) {
+		return line
+	}
+	return strings.TrimRight(strings.TrimSuffix(trimmed, " "+resolvedMarker), " \t")
+}
+
 // sync helpers — delegate to the optional Syncer, silently ignoring errors.
 
 func (s *Store) pull() {

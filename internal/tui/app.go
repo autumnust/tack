@@ -995,6 +995,10 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdTarget(cmd.Args)
 	case "reflect":
 		return m.cmdReflect(cmd.Args)
+	case "resolve":
+		return m.cmdResolveNotes(false)
+	case "unresolve":
+		return m.cmdResolveNotes(true)
 	case "sub":
 		return m.cmdSub(cmd.Args)
 	case "promote":
@@ -1489,6 +1493,8 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":a #N @Name") + "Assign specific issue",
 		"  " + key(":note \"text\"") + "Private annotation on selected issue",
 		"  " + key(":delnote") + "Clear notes from selected issue",
+		"  " + key(":resolve") + "Mark all 1v1 sections resolved (current person)",
+		"  " + key(":unresolve") + "Reopen all resolved 1v1 sections",
 		"  " + key(":pin") + "Pin selected issue to week focus",
 		"  " + key(":undo") + "Undo last pending operation",
 		"  " + key(":open") + "Open selected issue in browser",
@@ -2264,11 +2270,58 @@ func (m AppModel) preparePersonNoteBody(login, existing string) string {
 	return header + "\n\n" + todayHeading + "\n\n" + existing
 }
 
+// cmdResolveNotes marks every `## ` heading in the current person's 1v1
+// note as resolved (or undoes it when unresolve is true). The board's
+// per-person ✎ icon is driven by HasUnresolvedPersonNote, so resolving
+// every section makes the icon disappear — that's the visible signal of
+// an inbox-zero 1v1 file.
+func (m AppModel) cmdResolveNotes(unresolve bool) (tea.Model, tea.Cmd) {
+	if m.view != viewBoard {
+		m.statusMsg = ":resolve only works in board view"
+		return m, nil
+	}
+	if m.planStore == nil {
+		m.statusMsg = "Person notes unavailable"
+		return m, nil
+	}
+	login := m.board.CurrentPerson()
+	if login == "" {
+		m.statusMsg = "No person selected"
+		return m, nil
+	}
+	var (
+		changed int
+		err     error
+	)
+	if unresolve {
+		changed, err = m.planStore.UnresolvePersonNote(login)
+	} else {
+		changed, err = m.planStore.ResolvePersonNote(login)
+	}
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error updating notes: %s", err)
+		return m, nil
+	}
+	name := m.displayName(login)
+	switch {
+	case changed == 0 && unresolve:
+		m.statusMsg = fmt.Sprintf("No resolved sections to reopen for %s", name)
+	case changed == 0:
+		m.statusMsg = fmt.Sprintf("All sections already resolved for %s", name)
+	case unresolve:
+		m.statusMsg = fmt.Sprintf("Reopened %d note section(s) for %s", changed, name)
+	default:
+		m.statusMsg = fmt.Sprintf("Resolved %d note section(s) for %s", changed, name)
+	}
+	m.refreshBoardPersonNotes()
+	return m, nil
+}
+
 func (m *AppModel) refreshBoardPersonNotes() {
 	presence := map[string]bool{}
 	if m.planStore != nil {
 		for _, p := range m.persons {
-			presence[p.Login] = m.planStore.HasPersonNote(p.Login)
+			presence[p.Login] = m.planStore.HasUnresolvedPersonNote(p.Login)
 		}
 	}
 	m.board.SetPersonNotes(presence)

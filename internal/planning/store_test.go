@@ -3,6 +3,7 @@ package planning
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -265,6 +266,99 @@ func TestPersonNote_RoundTrip(t *testing.T) {
 	}
 	if !s.HasPersonNote("alice") {
 		t.Fatal("expected note existence after save")
+	}
+}
+
+func TestPersonNote_HasUnresolved_EmptyAndMissing(t *testing.T) {
+	s := tempStore(t)
+
+	if s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("missing note should be considered resolved (no icon)")
+	}
+	if err := s.SavePersonNote("alice", "   \n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("whitespace-only note should be treated as nothing to resolve")
+	}
+}
+
+func TestPersonNote_HasUnresolved_TracksHeadingMarker(t *testing.T) {
+	s := tempStore(t)
+	body := "# Alice\n\n## 2026-04-23\n- discussed priorities\n\n## 2026-05-01\n- next steps\n"
+	if err := s.SavePersonNote("alice", body); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("two unmarked sections should be unresolved")
+	}
+
+	// Resolve all → icon hides.
+	n, err := s.ResolvePersonNote("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 sections resolved, got %d", n)
+	}
+	if s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("after :resolve all sections should be done, icon should hide")
+	}
+
+	// Idempotent: resolving again is a no-op.
+	if n, err := s.ResolvePersonNote("alice"); err != nil || n != 0 {
+		t.Fatalf("re-resolve expected (0,nil), got (%d,%v)", n, err)
+	}
+
+	// Reopen one section by hand → icon must come back.
+	got, err := s.LoadPersonNote("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened := strings.Replace(got, "## 2026-05-01 ✓", "## 2026-05-01", 1)
+	if reopened == got {
+		t.Fatal("expected resolved marker on second heading after :resolve")
+	}
+	if err := s.SavePersonNote("alice", reopened); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("a single unresolved section should bring the icon back")
+	}
+}
+
+func TestPersonNote_HasUnresolved_HeaderlessTreatedUnresolved(t *testing.T) {
+	s := tempStore(t)
+	// Freeform body without `## ` headings — user typed prose only.
+	if err := s.SavePersonNote("alice", "raw thoughts, no headings\n"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("non-empty headerless note should still surface the icon")
+	}
+}
+
+func TestPersonNote_Unresolve_Reopens(t *testing.T) {
+	s := tempStore(t)
+	body := "# Alice\n\n## 2026-04-23\n- a\n\n## 2026-05-01\n- b\n"
+	if err := s.SavePersonNote("alice", body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolvePersonNote("alice"); err != nil {
+		t.Fatal(err)
+	}
+	if s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("expected resolved after :resolve")
+	}
+	n, err := s.UnresolvePersonNote("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 sections reopened, got %d", n)
+	}
+	if !s.HasUnresolvedPersonNote("alice") {
+		t.Fatal("after :unresolve sections should be unresolved again")
 	}
 }
 
