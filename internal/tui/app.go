@@ -995,7 +995,7 @@ func (m AppModel) openInBrowser() (tea.Model, tea.Cmd) {
 	target := m.selectedTarget()
 	if target != nil {
 		if target.IsUpstash() {
-			m.statusMsg = "No remote view — this row lives only in your local/upstash store. Run :github to elevate it to a GitHub issue."
+			m.statusMsg = "This row has no GitHub issue yet — :open is for GH issues. Run :github to create one."
 			return m, nil
 		}
 		url = target.URL
@@ -1164,7 +1164,7 @@ func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if target.IsUpstash() {
-		m.statusMsg = "This row has no GitHub issue yet — run :github first to elevate it."
+		m.statusMsg = "This row has no GitHub issue yet — :mv is for GH issues. Run :github to create one."
 		return m, nil
 	}
 
@@ -1240,7 +1240,7 @@ func (m AppModel) cmdComment(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if target.IsUpstash() {
-		m.statusMsg = "This row has no GitHub issue yet — run :github first."
+		m.statusMsg = "This row has no GitHub issue yet — :c is for GH issues. Run :github to create one."
 		return m, nil
 	}
 
@@ -1307,7 +1307,7 @@ func (m AppModel) cmdAssign(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if target.IsUpstash() {
-		m.statusMsg = "This row has no GitHub issue yet — run :github first."
+		m.statusMsg = "This row has no GitHub issue yet — :a is for GH issues. Run :github to create one."
 		return m, nil
 	}
 
@@ -2578,7 +2578,7 @@ func (m AppModel) cmdEdit(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !issue.IsUpstash() {
-		m.statusMsg = "GitHub issues are edited on GitHub. Press 'o' to open in browser."
+		m.statusMsg = fmt.Sprintf("#%d is a GitHub issue — edit it on GitHub. Press 'o' or :open to view it in the browser.", issue.Number)
 		return m, nil
 	}
 	text := upstashTaskText(m.plan, issue.ID)
@@ -2619,7 +2619,7 @@ func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if issue.IsUpstash() {
-		m.statusMsg = "This row has no GitHub issue yet — run :github first to create one."
+		m.statusMsg = "This row has no GitHub issue yet — :start is for GH issues. Run :github to create one."
 		return m, nil
 	}
 
@@ -3282,7 +3282,7 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !issue.IsUpstash() {
-			m.statusMsg = "GitHub issues can't be deleted from tack — close them on GitHub instead."
+			m.statusMsg = fmt.Sprintf("#%d is a GitHub issue — close it on GitHub, not from tack.", issue.Number)
 			return m, nil
 		}
 		removed := strings.TrimSpace(issue.Title)
