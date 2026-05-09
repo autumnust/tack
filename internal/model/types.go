@@ -40,6 +40,19 @@ type Config struct {
 	// the current host. Used by :start to set the working tree of the
 	// new tmux session. Missing entries fall back to ~/work/<basename>.
 	Repos map[string]string `yaml:"repos,omitempty"`
+
+	// Discuss configures the `:discuss` command. AnthropicAPIKey is
+	// required; Model and SystemPrompt have sensible defaults.
+	Discuss DiscussConfig `yaml:"discuss,omitempty"`
+}
+
+// DiscussConfig holds the secrets and tunables for `:discuss`. The API
+// key is read from config.yaml only — no env-var fallback, matching the
+// existing "secrets live in config" pattern.
+type DiscussConfig struct {
+	AnthropicAPIKey string `yaml:"anthropic_api_key"`
+	Model           string `yaml:"model,omitempty"`
+	SystemPrompt    string `yaml:"system_prompt,omitempty"`
 }
 
 // TeamLogins returns just the login strings.
