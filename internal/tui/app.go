@@ -1760,10 +1760,22 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.planView.StartSearch()
 			m.statusMsg = ""
 		}
+	case " ":
+		if m.planView.ToggleSelection() {
+			n := m.planView.SelectionCount()
+			if n == 0 {
+				m.statusMsg = "Selection cleared"
+			} else {
+				m.statusMsg = fmt.Sprintf("%d selected", n)
+			}
+		}
 	case "esc":
 		if m.planView.HasSearchFilter() {
 			m.planView.ClearSearch()
 			m.statusMsg = ""
+		} else if m.planView.HasSelection() {
+			m.planView.ClearSelection()
+			m.statusMsg = "Selection cleared"
 		}
 	}
 	return m, nil
@@ -3324,6 +3336,31 @@ func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
 	}
 	if m.view != viewPlan {
 		m.statusMsg = ":del only works in planning mode or on a board row"
+		return m, nil
+	}
+
+	// Multi-row selection: if the user has toggled rows with `space`, prefer
+	// that over cursor / line-number args. v1 supports Hibana only.
+	if m.planView.HasSelection() && m.planView.section == sectionHibana {
+		idxs := m.planView.SelectedHibanaIndices()
+		// Delete in descending order so earlier indices stay valid.
+		removed := 0
+		for i := len(idxs) - 1; i >= 0; i-- {
+			idx := idxs[i]
+			if idx < 0 || idx >= len(m.plan.Scratch) {
+				continue
+			}
+			_ = m.scratchDelete(m.plan.Scratch[idx])
+			m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
+			removed++
+		}
+		m.planView.ClearSelection()
+		m.planView.SetData(m.plan, m.project)
+		if removed == 1 {
+			m.statusMsg = "Removed 1 note"
+		} else {
+			m.statusMsg = fmt.Sprintf("Removed %d notes", removed)
+		}
 		return m, nil
 	}
 

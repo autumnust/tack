@@ -59,6 +59,12 @@ type PlanViewModel struct {
 	// Search (Hibana tab only)
 	searching   bool   // true while user is typing in search bar
 	searchQuery string // current search filter text
+
+	// Selection (Hibana tab only, v1). Keyed on focusIdx within the
+	// currently active section. Cleared on section switch / esc / search
+	// clear / destructive consumer success. Multi-row commands (`:del`,
+	// `:discuss`) prefer this over the cursor when non-empty.
+	selected map[int]bool
 }
 
 func NewPlanViewModel(plan *model.Plan, project *model.Project) PlanViewModel {
@@ -126,7 +132,69 @@ func (m *PlanViewModel) ClearSearch() {
 	m.searchQuery = ""
 	m.cursorIdx = 0
 	m.scrollOffset = 0
+	m.selected = nil
 	m.rebuildFlat()
+}
+
+// ToggleSelection flips selection state on the cursor row. No-op on
+// header rows or non-Hibana sections (selection is Hibana-only in v1).
+// Returns true if the call mutated state (used by the status line).
+func (m *PlanViewModel) ToggleSelection() bool {
+	if m.section != sectionHibana {
+		return false
+	}
+	fi := m.currentFlat()
+	if fi == nil || fi.header || fi.focusIdx < 0 {
+		return false
+	}
+	if m.selected == nil {
+		m.selected = map[int]bool{}
+	}
+	if m.selected[fi.focusIdx] {
+		delete(m.selected, fi.focusIdx)
+	} else {
+		m.selected[fi.focusIdx] = true
+	}
+	return true
+}
+
+// ClearSelection drops any pending multi-row selection.
+func (m *PlanViewModel) ClearSelection() {
+	m.selected = nil
+}
+
+// HasSelection reports whether anything is currently selected.
+func (m *PlanViewModel) HasSelection() bool {
+	return len(m.selected) > 0
+}
+
+// SelectionCount returns the size of the current selection.
+func (m *PlanViewModel) SelectionCount() int {
+	return len(m.selected)
+}
+
+// SelectedHibanaIndices returns the focusIdx values of currently-selected
+// Hibana rows, sorted ascending. Empty unless the active section is
+// Hibana and at least one row was toggled.
+func (m *PlanViewModel) SelectedHibanaIndices() []int {
+	if m.section != sectionHibana || len(m.selected) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(m.selected))
+	for i := range m.selected {
+		out = append(out, i)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// isSelected reports whether the flatItem's underlying data row is
+// currently selected. Used by render code only.
+func (m *PlanViewModel) isSelected(fi flatItem) bool {
+	if m.selected == nil || fi.header || fi.focusIdx < 0 {
+		return false
+	}
+	return m.selected[fi.focusIdx]
 }
 
 func (m *PlanViewModel) UpdateSearchQuery(q string) {
@@ -250,12 +318,14 @@ func (m *PlanViewModel) SetSection(s planSection) {
 	m.section = s
 	m.cursorIdx = 0
 	m.scrollOffset = 0
+	m.selected = nil
 	m.rebuildFlat()
 }
 
 func (m *PlanViewModel) NextSection() {
 	m.searching = false
 	m.searchQuery = ""
+	m.selected = nil
 	m.section = (m.section + 1) % sectionCount
 	m.cursorIdx = 0
 	m.scrollOffset = 0
@@ -265,6 +335,7 @@ func (m *PlanViewModel) NextSection() {
 func (m *PlanViewModel) PrevSection() {
 	m.searching = false
 	m.searchQuery = ""
+	m.selected = nil
 	if m.section == 0 {
 		m.section = sectionCount - 1
 	} else {
@@ -579,8 +650,14 @@ func (m *PlanViewModel) View(width, height int) string {
 	lineHeights := make([]int, len(m.flatItems))
 	for i, fi := range m.flatItems {
 		cursor := "  "
-		if i == m.cursorIdx {
+		selected := m.isSelected(fi)
+		switch {
+		case i == m.cursorIdx && selected:
+			cursor = cursorStyle.Render("►*")
+		case i == m.cursorIdx:
 			cursor = cursorStyle.Render("► ")
+		case selected:
+			cursor = cursorStyle.Render(" *")
 		}
 		rendered[i] = m.renderFlatItem(cursor, fi)
 		lineHeights[i] = strings.Count(rendered[i], "\n")

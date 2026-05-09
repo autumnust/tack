@@ -389,3 +389,79 @@ func TestWeekdaysBetween(t *testing.T) {
 		})
 	}
 }
+
+// --- Selection primitive ---
+
+func TestSelection_ToggleAndCount(t *testing.T) {
+	plan := makePlanWithScratch(3)
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+
+	if m.HasSelection() {
+		t.Fatal("expected no selection initially")
+	}
+	if !m.ToggleSelection() {
+		t.Fatal("toggle on first hibana row should succeed")
+	}
+	if got := m.SelectionCount(); got != 1 {
+		t.Errorf("count after one toggle: got %d, want 1", got)
+	}
+	m.CursorDown()
+	m.ToggleSelection()
+	if got := m.SelectionCount(); got != 2 {
+		t.Errorf("count after two toggles: got %d, want 2", got)
+	}
+	// Untoggle the second.
+	m.ToggleSelection()
+	if got := m.SelectionCount(); got != 1 {
+		t.Errorf("count after un-toggle: got %d, want 1", got)
+	}
+	idxs := m.SelectedHibanaIndices()
+	if len(idxs) != 1 {
+		t.Fatalf("indices len: got %d, want 1", len(idxs))
+	}
+}
+
+func TestSelection_NotToggleableInOtherSections(t *testing.T) {
+	plan := &model.Plan{
+		Today:   []model.TodoItem{{Text: "a"}, {Text: "b"}},
+		Scratch: []model.ScratchNote{{Text: "n1"}},
+	}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionToday)
+
+	if m.ToggleSelection() {
+		t.Error("toggle should be a no-op outside Hibana")
+	}
+	if m.HasSelection() {
+		t.Error("section other than Hibana should not accumulate selection")
+	}
+}
+
+func TestSelection_ClearedOnSectionSwitch(t *testing.T) {
+	plan := &model.Plan{
+		Today:   []model.TodoItem{{Text: "a"}},
+		Scratch: []model.ScratchNote{{Text: "n1"}, {Text: "n2"}},
+	}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+	m.ToggleSelection()
+	if !m.HasSelection() {
+		t.Fatal("setup: expected selection to exist")
+	}
+	m.NextSection()
+	if m.HasSelection() {
+		t.Error("NextSection should clear selection")
+	}
+}
+
+func TestSelection_RenderShowsMarker(t *testing.T) {
+	plan := makePlanWithScratch(2)
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+	m.ToggleSelection()
+	out := m.View(80, 16)
+	if !strings.Contains(out, "*") {
+		t.Errorf("expected '*' marker in selected-row render; got:\n%s", out)
+	}
+}

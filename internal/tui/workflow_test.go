@@ -2174,3 +2174,85 @@ func TestDetailSubIssuesNoDuplication(t *testing.T) {
 		t.Errorf("expected 'Sub-Issues' to appear exactly once in detail view, got %d occurrences", count)
 	}
 }
+
+// :del consumes a multi-row Hibana selection toggled with `space`.
+func TestDel_ConsumesHibanaSelection(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	t0 := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "alpha", CreatedAt: t0},
+		{Text: "beta", CreatedAt: t0.Add(time.Hour)},
+		{Text: "gamma", CreatedAt: t0.Add(2 * time.Hour)},
+	}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	// Cursor lands on most recent (gamma); space toggles it.
+	app = sendKeys(t, app, "space")
+	// Move down, toggle beta.
+	app = sendKeys(t, app, "j", "space")
+	if app.planView.SelectionCount() != 2 {
+		t.Fatalf("expected 2 selected, got %d", app.planView.SelectionCount())
+	}
+
+	app = sendCommand(t, app, "del")
+
+	if got := len(app.plan.Scratch); got != 1 {
+		t.Fatalf("expected 1 note remaining, got %d", got)
+	}
+	if app.plan.Scratch[0].Text != "alpha" {
+		t.Errorf("expected 'alpha' to survive, got %q", app.plan.Scratch[0].Text)
+	}
+	if app.planView.HasSelection() {
+		t.Error(":del should clear selection on success")
+	}
+	assertStatus(t, app, "Removed 2 notes")
+}
+
+func TestDel_FallsBackToCursorWhenNoSelection(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	t0 := time.Now().Add(-time.Hour)
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "alpha", CreatedAt: t0},
+		{Text: "beta", CreatedAt: t0.Add(time.Minute)},
+	}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "del")
+
+	if got := len(app.plan.Scratch); got != 1 {
+		t.Fatalf("expected 1 note remaining, got %d", got)
+	}
+}
+
+func TestEscClearsSelection(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "n1"},
+		{Text: "n2"},
+	}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	app = sendKeys(t, app, "space")
+	if !app.planView.HasSelection() {
+		t.Fatal("setup: expected selection")
+	}
+	app = sendKeys(t, app, "esc")
+	if app.planView.HasSelection() {
+		t.Error("esc should clear selection when no search filter is active")
+	}
+}
