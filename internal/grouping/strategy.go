@@ -160,6 +160,13 @@ func GroupByPerson(items []model.ProjectItem, team []string, strategy Strategy, 
 		}
 		var filtered []model.ProjectItem
 		for _, item := range items {
+			// Upstash-backed items have no GH number — they're personal
+			// in-flight work the user just shipped. They shouldn't be
+			// filtered out by a GitHub-issue focus list.
+			if item.IsUpstash() {
+				filtered = append(filtered, item)
+				continue
+			}
 			// Keep if: issue number is in focus, or parent number is in focus
 			if focus[item.Number] {
 				filtered = append(filtered, item)

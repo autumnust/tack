@@ -236,6 +236,27 @@ func TestGroupByPerson_FocusFiltering(t *testing.T) {
 	}
 }
 
+// Upstash-backed items have Number=0 (no GH identity yet) and shouldn't
+// be filtered out by the focus list — they're personal in-flight work
+// the user just shipped from hibana, not GH issues.
+func TestGroupByPerson_FocusKeepsUpstashItems(t *testing.T) {
+	items := []model.ProjectItem{
+		{Number: 200, Assignees: []string{"alice"}}, // not in focus
+		{Number: 0, Assignees: []string{"alice"}, Source: model.SourceUpstash, Title: "raw"},
+	}
+	focuses := map[string]map[int]bool{"alice": {100: true}}
+	result := GroupByPerson(items, []string{"alice"}, ByEpic{}, map[string]string{}, focuses)
+	var titles []string
+	for _, g := range result[0].Groups {
+		for _, it := range g.Issues {
+			titles = append(titles, it.Title)
+		}
+	}
+	if len(titles) != 1 || titles[0] != "raw" {
+		t.Errorf("focus filter should keep upstash items and drop unfocused GH items; got %v", titles)
+	}
+}
+
 func TestGroupByPerson_FocusIncludesChildren(t *testing.T) {
 	items := []model.ProjectItem{
 		{Number: 101, Assignees: []string{"alice"}, Parent: &model.ParentRef{Number: 100}},
