@@ -178,6 +178,24 @@ func TestPlanView_MultiLineScrolling(t *testing.T) {
 	}
 }
 
+func TestPlanView_HibanaExpandedTallerThanViewport(t *testing.T) {
+	// A single expanded hibana note taller than the viewport must still
+	// render (top portion) — not blank out the view.
+	plan := &model.Plan{}
+	plan.Scratch = []model.ScratchNote{{
+		Text: "first line\nsecond line\nthird line\nfourth line\nfifth line\nsixth line",
+	}}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+	m.ToggleHibanaExpanded()
+
+	// Viewport: height=10 → availLines=4, item is 6 lines tall.
+	output := m.View(60, 10)
+	if !strings.Contains(output, "first line") {
+		t.Errorf("expected oversized expanded note's top to render; got:\n%s", output)
+	}
+}
+
 func TestPlanView_MoveDownThroughView(t *testing.T) {
 	plan := makePlanWithScratch(10)
 	m := NewPlanViewModel(plan, nil)

@@ -615,6 +615,12 @@ func (m *PlanViewModel) View(width, height int) string {
 	usedLines := 0
 	for i := m.scrollOffset; i < len(m.flatItems); i++ {
 		if usedLines+lineHeights[i] > availLines {
+			// If we haven't rendered anything yet, the cursor item itself
+			// is taller than the viewport (common in expanded hibana view).
+			// Show its top portion so the view isn't blank.
+			if usedLines == 0 {
+				sb.WriteString(truncateLines(rendered[i], availLines))
+			}
 			break
 		}
 		sb.WriteString(rendered[i])
@@ -710,6 +716,24 @@ func splitWrap(text string, firstWidth, restWidth int) []string {
 		width = restWidth
 	}
 	return lines
+}
+
+// truncateLines returns the first n lines of s, preserving any leading
+// newlines. The result always ends with "\n" if the source did.
+func truncateLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	count := 0
+	for i, r := range s {
+		if r == '\n' {
+			count++
+			if count == n {
+				return s[:i+1]
+			}
+		}
+	}
+	return s
 }
 
 // wrapText wraps long text to fit within maxWidth, indenting continuation lines.
