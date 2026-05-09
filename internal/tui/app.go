@@ -1588,12 +1588,19 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"",
 		section("Workflow: hibana → board → GitHub → tmux"),
 		"  " + key(":ship N") + "(hibana) Graduate note to board as upstash row under your name (config.me). Vim edit pass.",
-		"  " + key(":edit") + "(board, upstash row) Edit text in vim (mirrors hibana edit)",
-		"  " + key(":del") + "(board, upstash row) Delete the row",
-		"  " + key(":github") + "(board, upstash row) Elevate → real GitHub issue (template editor)",
-		"  " + key(":start <slug>") + "(board, GH row) tmux session for cursor's GH issue, named <num>-<slug>",
-		"  " + helpStyle.Render("    Upstash rows render as pink ◇ (no #N). Once :github'd, the row is a regular GH"),
-		"  " + helpStyle.Render("    issue — :mv / :c / :a / :open all work normally. Today is manual-only via :today."),
+		"  " + key(":edit") + "(board, upstash) Edit row text in vim (mirrors hibana edit)",
+		"  " + key(":del") + "(board, upstash) Delete the row (GH rows: close on GitHub instead)",
+		"  " + key(":github") + "(board, upstash) Elevate → real GitHub issue (template editor)",
+		"  " + key(":start <slug>") + "(board) tmux session: GH row → <num>-<slug>, upstash row → <slug>",
+		"  " + helpStyle.Render("    Upstash rows render as pink ◇ (no #N). They support :edit / :del / :github /"),
+		"  " + helpStyle.Render("    :start. GH-only verbs (:open, :mv, :c, :a) error with a hint to :github first."),
+		"  " + helpStyle.Render("    Once :github'd, the row behaves like any other GitHub project ticket."),
+		"",
+		section("GitHub-row commands (recap)"),
+		"  " + key(":mv <status>") + "Move issue status (Todo / In Progress / In Review / Done)",
+		"  " + key(":c \"comment\"") + "Comment on the issue (queued until quit)",
+		"  " + key(":a @Name") + "Assign the issue (queued until quit)",
+		"  " + key(":open / o") + "Open the issue in your browser",
 		"",
 		section("Mode Switching"),
 		"  " + key(":plan") + "Switch to planning mode",
@@ -2600,12 +2607,14 @@ func upstashTaskText(plan *model.Plan, id string) string {
 	return ""
 }
 
-// cmdStart creates a tmux session for the cursor's GitHub project item.
-// Renamed from the legacy `:ship <slug>` board verb — `:ship` now means
-// "land on board," so the session-spawning verb gets its own name.
+// cmdStart creates a tmux session for the cursor's board row. For GH
+// rows the session is named `<issue-num>-<slug>` and the working tree
+// resolves via config.repos[<repo>]. For upstash rows there's no issue
+// number and no repo association, so the session is just `<slug>` and
+// the working tree falls back to the host's default cwd.
 func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.statusMsg = "Usage: :start <slug> — appended to the issue number for the session name (e.g., :start multicat → 28151-multicat)"
+		m.statusMsg = "Usage: :start <slug> — slug names the tmux session (GH row → <num>-<slug>; upstash row → <slug>)"
 		return m, nil
 	}
 	slug := sanitizeSlug(strings.Join(args, "-"))
@@ -2615,21 +2624,23 @@ func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
 	}
 	issue := m.board.SelectedIssue()
 	if issue == nil {
-		m.statusMsg = "Move the cursor onto a project item before running :start <slug>"
-		return m, nil
-	}
-	if issue.IsUpstash() {
-		m.statusMsg = "This row has no GitHub issue yet — :start is for GH issues. Run :github to create one."
+		m.statusMsg = "Move the cursor onto a board row before running :start <slug>"
 		return m, nil
 	}
 
 	host := "aws"
-	repoPath := ""
-	if p, ok := m.config.Repos[issue.Repo]; ok && p != "" {
-		repoPath = p
+	var sessionName, repoPath string
+	var ticket ship.IssueRef
+	if issue.IsUpstash() {
+		sessionName = slug
+		// no repoPath, no ticket — upstash rows aren't anchored to a repo
+	} else {
+		if p, ok := m.config.Repos[issue.Repo]; ok && p != "" {
+			repoPath = p
+		}
+		sessionName = fmt.Sprintf("%d-%s", issue.Number, slug)
+		ticket = ship.IssueRef{Repo: issue.Repo, Number: issue.Number}
 	}
-	sessionName := fmt.Sprintf("%d-%s", issue.Number, slug)
-	ticket := ship.IssueRef{Repo: issue.Repo, Number: issue.Number}
 
 	sshRunner := m.shipSSH
 	if sshRunner == nil {
@@ -2640,10 +2651,14 @@ func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("Start: %s", err)
 		return m, nil
 	}
-	m.statusMsg = ship.FormatStatus(ship.OrchestrateResult{
-		Issue:   ticket,
-		Session: res,
-	}, host)
+	if issue.IsUpstash() {
+		m.statusMsg = fmt.Sprintf("Started %s:%s. Attach with: tss %s:%s", host, res.SessionName, host, res.SessionName)
+	} else {
+		m.statusMsg = ship.FormatStatus(ship.OrchestrateResult{
+			Issue:   ticket,
+			Session: res,
+		}, host)
+	}
 	return m, nil
 }
 

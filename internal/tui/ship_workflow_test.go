@@ -548,7 +548,10 @@ func TestStart_FromBoard_RequiresSlug(t *testing.T) {
 	}
 }
 
-func TestStart_RejectsUpstashRow(t *testing.T) {
+// :start on an upstash row creates a session named just <slug> (no
+// issue prefix), with no ticket linkage and no repo path — the row
+// isn't anchored to a GitHub issue or repo.
+func TestStart_OnUpstashRow_UsesSlugOnly(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
@@ -571,13 +574,26 @@ func TestStart_RejectsUpstashRow(t *testing.T) {
 		app.board.CursorDown()
 	}
 
-	app = sendCommand(t, app, "start multicat")
+	app = sendCommand(t, app, "start sketch")
 
-	if len(ssh.calls) != 0 {
-		t.Errorf(":start on upstash row should not call ssh, got %d", len(ssh.calls))
+	if len(ssh.calls) != 1 {
+		t.Fatalf("expected 1 ssh call, got %d", len(ssh.calls))
 	}
-	if !strings.Contains(app.statusMsg, ":github") {
-		t.Errorf("status should hint at :github first, got %q", app.statusMsg)
+	if !strings.Contains(ssh.calls[0].cmd, "ts new") || !strings.Contains(ssh.calls[0].cmd, "sketch") {
+		t.Errorf("session command should run ts new with slug, got cmd %q", ssh.calls[0].cmd)
+	}
+	// Make sure the session name isn't '0-sketch' (i.e. no issue-number prefix).
+	if strings.Contains(ssh.calls[0].cmd, "0-sketch") {
+		t.Errorf("upstash session must not get a #0 issue-number prefix, got %q", ssh.calls[0].cmd)
+	}
+	if strings.Contains(ssh.calls[0].cmd, "cd ") {
+		t.Errorf("upstash session should not cd into a repo, got %q", ssh.calls[0].cmd)
+	}
+	if len(gh.calls) > 0 {
+		t.Errorf(":start should not call gh, got %d calls", len(gh.calls))
+	}
+	if !strings.Contains(app.statusMsg, "aws:sketch") {
+		t.Errorf("status should mention aws:sketch, got %q", app.statusMsg)
 	}
 }
 
