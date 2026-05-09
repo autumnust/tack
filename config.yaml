@@ -18,6 +18,11 @@ team:
 # status_field: name of the Status field in your GitHub Project
 status_field: "Status"
 
+# me: your GitHub login. Required for :ship — graduating a hibana note
+# to the board needs to know whose person bucket the new (upstash-backed)
+# row lives under.
+# me: alice
+
 # planning: personal planning data directory
 # Can point to an Obsidian vault or any local/synced folder
 planning:

@@ -9,6 +9,19 @@ type Plan struct {
 	Completed      []TodoItem      `yaml:"completed,omitempty"` // archived done items from previous days
 	Scratch        []ScratchNote   `yaml:"scratch,omitempty"`
 	MonthlyTargets []MonthlyTarget `yaml:"monthly_targets,omitempty"`
+	UpstashTasks   []UpstashTask   `yaml:"upstash_tasks,omitempty"`
+}
+
+// UpstashTask is a board item with no GitHub backing — the result of
+// graduating a hibana note via :ship before any :github elevation. It
+// renders on the board under the user's own person group; :github
+// removes it and creates a real GH issue in its place.
+type UpstashTask struct {
+	Id        string    `yaml:"id"`
+	Text      string    `yaml:"text"`
+	Status    string    `yaml:"status,omitempty"`
+	CreatedAt time.Time `yaml:"created_at,omitempty"`
+	UpdatedAt time.Time `yaml:"updated_at,omitempty"`
 }
 
 // FocusItem is a weekly focus entry — either a freeform goal or a pinned GitHub issue.

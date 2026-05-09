@@ -31,8 +31,13 @@ type Config struct {
 	Focus       []int          `yaml:"focus,omitempty"`
 	Planning    PlanningConfig `yaml:"planning,omitempty"`
 
+	// Me is the current user's GitHub login. Required for :ship: it's the
+	// person bucket that upstash-backed (non-GitHub) board items live
+	// under. If unset, :ship surfaces an error pointing here.
+	Me string `yaml:"me,omitempty"`
+
 	// Repos maps "<owner>/<repo>" → absolute path of the local clone on
-	// the current host. Used by :ship to set the working tree of the
+	// the current host. Used by :start to set the working tree of the
 	// new tmux session. Missing entries fall back to ~/work/<basename>.
 	Repos map[string]string `yaml:"repos,omitempty"`
 }
@@ -93,8 +98,13 @@ type FieldOption struct {
 	Name string
 }
 
+// SourceUpstash marks a board item that lives only in the local/upstash
+// store (no GitHub backing). Empty Source means GitHub — the historical
+// default — so existing call sites don't need to set it.
+const SourceUpstash = "upstash"
+
 type ProjectItem struct {
-	ID        string // issue/PR node ID (for comments)
+	ID        string // issue/PR node ID (for comments). For upstash items, the UpstashTask Id.
 	ItemID    string // project item ID (for field mutations)
 	Title     string
 	Number    int
@@ -107,6 +117,14 @@ type ProjectItem struct {
 	Repo      string
 	Parent    *ParentRef
 	Comments  []Comment
+	Source    string // "" (GitHub, default) or SourceUpstash
+}
+
+// IsUpstash reports whether this item is upstash-backed (no GitHub
+// identity yet). Operations like :open / :mv / :c / :a need a GitHub
+// node and should reject upstash items with a hint to run :github first.
+func (p ProjectItem) IsUpstash() bool {
+	return p.Source == SourceUpstash
 }
 
 type ParentRef struct {

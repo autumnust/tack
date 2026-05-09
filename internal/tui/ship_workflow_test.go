@@ -71,54 +71,72 @@ func (f *fakeSSH) Run(host, command string) ([]byte, error) {
 	return nil, f.err
 }
 
-// --- :promote tests ---
+// --- :ship tests (hibana → board) ---
 
-func TestPromote_HibanaToToday_OnSave(t *testing.T) {
+func TestShip_HibanaToBoard_OnSave(t *testing.T) {
 	app := newTestApp()
+	app.config.Me = "alice"
 	app.width = 80
 	app.height = 40
 	app = sendCommand(t, app, "plan")
 
-	// Add a hibana note
 	app.plan.Scratch = []model.ScratchNote{
 		{Id: "n1", Text: "raw thought"},
 	}
 	app.planView.SetData(app.plan, app.project)
 	app.planView.SetSection(sectionHibana)
 
-	// Run :promote 1 — should open editor (we won't assert the cmd, just
-	// the post-editor behavior via simulated editorFinishedMsg).
-	app = sendCommand(t, app, "promote 1")
+	app = sendCommand(t, app, "ship 1")
 
-	// Simulate the user saving "polished thought" in vim
 	tmpFile := t.TempDir() + "/p.md"
 	if err := os.WriteFile(tmpFile, []byte("polished thought"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := app.Update(editorFinishedMsg{
 		tmpPath: tmpFile,
-		purpose: editorPurposePromote,
+		purpose: editorPurposeShip,
 		idx:     0,
 	})
 	app = m.(AppModel)
 
-	if len(app.plan.Today) != 1 {
-		t.Fatalf("expected 1 today item, got %d", len(app.plan.Today))
+	if len(app.plan.UpstashTasks) != 1 {
+		t.Fatalf("expected 1 upstash task, got %d", len(app.plan.UpstashTasks))
 	}
-	if app.plan.Today[0].Text != "polished thought" {
-		t.Errorf("today text = %q", app.plan.Today[0].Text)
+	if app.plan.UpstashTasks[0].Text != "polished thought" {
+		t.Errorf("upstash text = %q", app.plan.UpstashTasks[0].Text)
 	}
-	if app.plan.Today[0].IssueNum != 0 {
-		t.Errorf("today IssueNum = %d, want 0 for promote", app.plan.Today[0].IssueNum)
+	if app.plan.UpstashTasks[0].Id != "n1" {
+		t.Errorf("upstash id = %q, want preserved hibana id", app.plan.UpstashTasks[0].Id)
 	}
 	if len(app.plan.Scratch) != 0 {
 		t.Errorf("expected hibana row deleted, still have %d", len(app.plan.Scratch))
 	}
-	assertStatus(t, app, "Promoted to today")
+	assertStatus(t, app, "Shipped to board")
+	if app.view != viewBoard {
+		t.Errorf("expected to land on board view, got %v", app.view)
+	}
 }
 
-func TestPromote_AbortLeavesNoteInPlace(t *testing.T) {
+func TestShip_RequiresMeConfig(t *testing.T) {
 	app := newTestApp()
+	// no Me set
+	app = sendCommand(t, app, "plan")
+	app.plan.Scratch = []model.ScratchNote{{Id: "n1", Text: "x"}}
+	app.planView.SetData(app.plan, app.project)
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "ship 1")
+	if len(app.plan.UpstashTasks) != 0 {
+		t.Errorf(":ship without Me should be a no-op, got %d tasks", len(app.plan.UpstashTasks))
+	}
+	if !strings.Contains(app.statusMsg, "me:") && !strings.Contains(app.statusMsg, "Me") {
+		t.Errorf("status should hint at config: %q", app.statusMsg)
+	}
+}
+
+func TestShip_AbortLeavesNoteInPlace(t *testing.T) {
+	app := newTestApp()
+	app.config.Me = "alice"
 	app = sendCommand(t, app, "plan")
 	app.plan.Scratch = []model.ScratchNote{
 		{Id: "n1", Text: "untouched"},
@@ -126,35 +144,32 @@ func TestPromote_AbortLeavesNoteInPlace(t *testing.T) {
 	app.planView.SetData(app.plan, app.project)
 	app.planView.SetSection(sectionHibana)
 
-	// Simulate editor failing (user :cq'd or wrote nothing) — our flow
-	// uses an empty file to mean "abort".
 	tmpFile := t.TempDir() + "/empty.md"
 	_ = os.WriteFile(tmpFile, []byte(""), 0644)
 	m, _ := app.Update(editorFinishedMsg{
 		tmpPath: tmpFile,
-		purpose: editorPurposePromote,
+		purpose: editorPurposeShip,
 		idx:     0,
 	})
 	app = m.(AppModel)
 
-	if len(app.plan.Today) != 0 {
-		t.Errorf("expected no today items, got %d", len(app.plan.Today))
+	if len(app.plan.UpstashTasks) != 0 {
+		t.Errorf("expected no upstash tasks, got %d", len(app.plan.UpstashTasks))
 	}
 	if len(app.plan.Scratch) != 1 {
 		t.Errorf("expected hibana row preserved, got %d", len(app.plan.Scratch))
 	}
-	assertStatus(t, app, "Promote canceled")
+	assertStatus(t, app, "Ship canceled")
 }
 
-// --- :ship tests ---
+// --- :github tests (upstash board row → real GH issue) ---
 
-func TestShip_HappyPath_FromTodayRow(t *testing.T) {
+func TestGithub_HappyPath_FromUpstashRow(t *testing.T) {
 	app := newTestApp()
+	app.config.Me = "alice"
+	app.config.Project = "https://github.com/orgs/test-org/projects/1"
 	app.width = 80
 	app.height = 40
-
-	// Stub config + ship runners
-	app.config.Project = "https://github.com/orgs/test-org/projects/1"
 
 	gh := &fakeGH{resp: map[string]fakeGHResp{
 		"issue create":     {out: []byte("https://github.com/test-org/repo/issues/28151\n")},
@@ -165,12 +180,25 @@ func TestShip_HappyPath_FromTodayRow(t *testing.T) {
 	app.shipGH = gh
 	app.shipSSH = ssh
 
-	app = sendCommand(t, app, "plan")
-	app = sendCommand(t, app, `today "make redis fast"`)
+	// Seed an upstash task and rebuild board with it under alice.
+	app.plan.UpstashTasks = []model.UpstashTask{
+		{Id: "ups1", Text: "raw thought"},
+	}
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{
+				{Issues: app.upstashItems()},
+			},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
 
-	// User runs :ship 1 — opens editor with template (we skip the
-	// editor-launch assertion and synthesize the final message).
-	tmpFile := t.TempDir() + "/ship.md"
+	tmpFile := t.TempDir() + "/gh.md"
 	tpl := `# Title
 Make redis fast
 
@@ -193,17 +221,14 @@ local
 		t.Fatal(err)
 	}
 	m, _ := app.Update(editorFinishedMsg{
-		tmpPath: tmpFile,
-		purpose: editorPurposeShip,
-		idx:     0,
+		tmpPath:   tmpFile,
+		purpose:   editorPurposeGithub,
+		upstashID: "ups1",
 	})
 	app = m.(AppModel)
 
-	if len(app.plan.Today) != 1 {
-		t.Fatalf("today rows changed unexpectedly: %d", len(app.plan.Today))
-	}
-	if app.plan.Today[0].IssueNum != 28151 {
-		t.Errorf("today IssueNum = %d, want 28151", app.plan.Today[0].IssueNum)
+	if len(app.plan.UpstashTasks) != 0 {
+		t.Errorf("upstash task should be removed after :github, got %d", len(app.plan.UpstashTasks))
 	}
 	if !strings.Contains(app.statusMsg, "Shipped #28151") {
 		t.Errorf("status = %q, want 'Shipped #28151...'", app.statusMsg)
@@ -213,55 +238,51 @@ local
 	}
 }
 
-func TestShip_AbortNoOp(t *testing.T) {
+func TestGithub_AbortNoOp(t *testing.T) {
 	app := newTestApp()
-	app = sendCommand(t, app, "plan")
-	app = sendCommand(t, app, `today "task"`)
+	app.config.Me = "alice"
 
 	gh := &fakeGH{}
 	ssh := &fakeSSH{}
 	app.shipGH = gh
 	app.shipSSH = ssh
+
+	app.plan.UpstashTasks = []model.UpstashTask{{Id: "ups1", Text: "x"}}
 
 	tmpFile := t.TempDir() + "/empty.md"
 	_ = os.WriteFile(tmpFile, []byte(""), 0644)
 	m, _ := app.Update(editorFinishedMsg{
-		tmpPath: tmpFile,
-		purpose: editorPurposeShip,
-		idx:     0,
+		tmpPath:   tmpFile,
+		purpose:   editorPurposeGithub,
+		upstashID: "ups1",
 	})
 	app = m.(AppModel)
 
-	if app.plan.Today[0].IssueNum != 0 {
-		t.Errorf("IssueNum should remain 0 on abort, got %d", app.plan.Today[0].IssueNum)
+	if len(app.plan.UpstashTasks) != 1 {
+		t.Errorf("upstash task should remain on abort, got %d", len(app.plan.UpstashTasks))
 	}
 	if len(gh.calls) > 0 {
 		t.Errorf("must not call gh on abort, got %d calls", len(gh.calls))
 	}
-	assertStatus(t, app, "Ship canceled")
+	assertStatus(t, app, "Github canceled")
 }
 
-// TestShip_AbortOnUnsavedQuit: simulates `:q!` from vim — the editor
-// exits without writing, so the file's content is identical to the
-// template tack pre-filled. Nothing user-driven was decided, so nothing
-// should happen: no gh, no ssh, no IssueNum stamp.
-func TestShip_AbortOnUnsavedQuit(t *testing.T) {
+func TestGithub_AbortOnUnsavedQuit(t *testing.T) {
 	app := newTestApp()
-	app = sendCommand(t, app, "plan")
-	app = sendCommand(t, app, `today "task"`)
+	app.config.Me = "alice"
 
 	gh := &fakeGH{}
 	ssh := &fakeSSH{}
 	app.shipGH = gh
 	app.shipSSH = ssh
 
-	// The exact template tack would have written. The file ends up with
-	// this same content because vim never saved.
+	app.plan.UpstashTasks = []model.UpstashTask{{Id: "ups1", Text: "x"}}
+
 	tpl := `# Title
 
 
 # Body
-task
+x
 
 # Repo
 kumo-ai/kumo
@@ -275,20 +296,20 @@ new
 # Host
 local
 `
-	tmpFile := t.TempDir() + "/ship.md"
+	tmpFile := t.TempDir() + "/gh.md"
 	if err := os.WriteFile(tmpFile, []byte(tpl), 0644); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := app.Update(editorFinishedMsg{
 		tmpPath:         tmpFile,
-		purpose:         editorPurposeShip,
-		idx:             0,
+		purpose:         editorPurposeGithub,
+		upstashID:       "ups1",
 		originalContent: tpl,
 	})
 	app = m.(AppModel)
 
-	if app.plan.Today[0].IssueNum != 0 {
-		t.Errorf("IssueNum should remain 0 on :q!, got %d", app.plan.Today[0].IssueNum)
+	if len(app.plan.UpstashTasks) != 1 {
+		t.Errorf("upstash task should remain on :q!, got %d", len(app.plan.UpstashTasks))
 	}
 	if len(gh.calls) > 0 {
 		t.Errorf(":q! must not call gh, got %d calls", len(gh.calls))
@@ -296,14 +317,12 @@ local
 	if len(ssh.calls) > 0 {
 		t.Errorf(":q! must not call ssh, got %d calls", len(ssh.calls))
 	}
-	assertStatus(t, app, "Ship canceled")
+	assertStatus(t, app, "Github canceled")
 }
 
-// TestShip_FromBoard_CreatesSessionWithSlug: in board view, with the
-// cursor on a project item, `:ship <slug>` creates a tmux session named
-// `<issue-num>-<slug>` for that item. No editor, no template, no
-// `gh issue create` (the issue already exists).
-func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
+// --- :start tests (board → tmux session) ---
+
+func TestStart_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
@@ -313,7 +332,6 @@ func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 	app.shipGH = gh
 	app.shipSSH = ssh
 
-	// Build a minimal board with one issue under one person.
 	app.persons = []model.PersonGroup{
 		{
 			Login: "alice", DisplayName: "Alice",
@@ -329,21 +347,17 @@ func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 	app.board = NewBoardModel(app.persons)
 	app.view = viewBoard
 
-	// Move cursor onto the issue (epic header is at idx 0 if present;
-	// no epic here, so issue is at 0).
-	// Ensure cursor is on the issue, not a header.
 	for app.board.SelectedIssue() == nil {
 		app.board.CursorDown()
 	}
 
-	app = sendCommand(t, app, "ship multicat")
+	app = sendCommand(t, app, "start multicat")
 
-	// Should have made one ssh call: ts new on the issue#-slug name.
 	if len(ssh.calls) != 1 {
 		t.Fatalf("expected 1 ssh call, got %d: %+v", len(ssh.calls), ssh.calls)
 	}
 	if ssh.calls[0].host != "aws" {
-		t.Errorf("default board-mode host should be aws, got %q", ssh.calls[0].host)
+		t.Errorf("default host should be aws, got %q", ssh.calls[0].host)
 	}
 	if !strings.Contains(ssh.calls[0].cmd, "ts new") {
 		t.Errorf("ssh cmd should run ts new, got %q", ssh.calls[0].cmd)
@@ -352,7 +366,7 @@ func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 		t.Errorf("session name should be 28151-multicat, got cmd %q", ssh.calls[0].cmd)
 	}
 	if len(gh.calls) > 0 {
-		t.Errorf("board ship should not call gh (issue already exists), got %d calls", len(gh.calls))
+		t.Errorf(":start should not call gh, got %d calls", len(gh.calls))
 	}
 	if !strings.Contains(app.statusMsg, "Shipped #28151") {
 		t.Errorf("status = %q, want 'Shipped #28151...'", app.statusMsg)
@@ -362,9 +376,7 @@ func TestShip_FromBoard_CreatesSessionWithSlug(t *testing.T) {
 	}
 }
 
-// TestShip_FromBoard_RequiresSlug: `:ship` with no arg in board view
-// surfaces a usage hint instead of a silent default.
-func TestShip_FromBoard_RequiresSlug(t *testing.T) {
+func TestStart_FromBoard_RequiresSlug(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
@@ -385,7 +397,7 @@ func TestShip_FromBoard_RequiresSlug(t *testing.T) {
 		app.board.CursorDown()
 	}
 
-	app = sendCommand(t, app, "ship")
+	app = sendCommand(t, app, "start")
 
 	if len(ssh.calls) != 0 {
 		t.Errorf("expected no ssh calls without slug, got %d", len(ssh.calls))
@@ -395,11 +407,45 @@ func TestShip_FromBoard_RequiresSlug(t *testing.T) {
 	}
 }
 
-func TestShip_PartialFailure_StampIssueAnyway(t *testing.T) {
+func TestStart_RejectsUpstashRow(t *testing.T) {
 	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	gh := &fakeGH{}
+	ssh := &fakeSSH{}
+	app.shipGH = gh
+	app.shipSSH = ssh
+
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{{Issues: []model.ProjectItem{
+				{ID: "ups1", Title: "raw thought", Source: model.SourceUpstash},
+			}}},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	app = sendCommand(t, app, "start multicat")
+
+	if len(ssh.calls) != 0 {
+		t.Errorf(":start on upstash row should not call ssh, got %d", len(ssh.calls))
+	}
+	if !strings.Contains(app.statusMsg, ":github") {
+		t.Errorf("status should hint at :github first, got %q", app.statusMsg)
+	}
+}
+
+func TestGithub_PartialFailure(t *testing.T) {
+	app := newTestApp()
+	app.config.Me = "alice"
 	app.config.Project = "https://github.com/orgs/test-org/projects/1"
-	app = sendCommand(t, app, "plan")
-	app = sendCommand(t, app, `today "task"`)
+	app.plan.UpstashTasks = []model.UpstashTask{{Id: "ups1", Text: "x"}}
+	app.view = viewBoard
 
 	gh := &fakeGH{resp: map[string]fakeGHResp{
 		"issue create":     {out: []byte("https://github.com/test-org/repo/issues/9999\n")},
@@ -410,7 +456,7 @@ func TestShip_PartialFailure_StampIssueAnyway(t *testing.T) {
 	app.shipGH = gh
 	app.shipSSH = ssh
 
-	tmpFile := t.TempDir() + "/ship.md"
+	tmpFile := t.TempDir() + "/gh.md"
 	tpl := `# Title
 T
 
@@ -431,24 +477,22 @@ aws-bench
 `
 	_ = os.WriteFile(tmpFile, []byte(tpl), 0644)
 	m, _ := app.Update(editorFinishedMsg{
-		tmpPath: tmpFile,
-		purpose: editorPurposeShip,
-		idx:     0,
+		tmpPath:   tmpFile,
+		purpose:   editorPurposeGithub,
+		upstashID: "ups1",
 	})
 	app = m.(AppModel)
 
-	// Issue created → todo stamped, even though session create failed
-	if app.plan.Today[0].IssueNum != 9999 {
-		t.Errorf("IssueNum = %d, want 9999 (so re-run finds it)", app.plan.Today[0].IssueNum)
+	if len(app.plan.UpstashTasks) != 0 {
+		t.Errorf("upstash task should be removed even on partial failure, got %d", len(app.plan.UpstashTasks))
 	}
-	if !strings.Contains(strings.ToLower(app.statusMsg), "ship") {
+	if !strings.Contains(strings.ToLower(app.statusMsg), "github") {
 		t.Errorf("status should describe partial state: %q", app.statusMsg)
 	}
 }
 
 // --- Wiring sanity check: Orchestrate result formatter is the source of
-// the status string (so the same code path the integration tests exercise
-// is what the user sees).
+// the status string.
 
 func TestFormatStatus_IncludesAttachHint(t *testing.T) {
 	res := ship.OrchestrateResult{
@@ -467,5 +511,4 @@ func TestFormatStatus_IncludesAttachHint(t *testing.T) {
 	}
 }
 
-// Avoid unused import warnings when tests are stripped down.
 var _ = tea.KeyMsg{}

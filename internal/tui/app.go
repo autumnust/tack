@@ -106,8 +106,8 @@ type editorPurpose int
 
 const (
 	editorPurposePlanItem editorPurpose = iota // default — section/idx/subIdx interpreted
-	editorPurposePromote                        // hibana note → today todo (via vim)
-	editorPurposeShip                           // today todo → ship template
+	editorPurposeShip                           // hibana note → upstash board item (text edit)
+	editorPurposeGithub                         // upstash board item → GH issue (template)
 	editorPurposeReflect                        // monthly target → sealed vault file
 )
 
@@ -126,6 +126,10 @@ type editorFinishedMsg struct {
 	originalContent string
 	// month is set for editorPurposeReflect — the YYYY-MM bucket being sealed.
 	month string
+	// upstashID is set for editorPurposeGithub — the UpstashTask Id whose
+	// elevation to GitHub the user is editing. The task is removed from
+	// plan.UpstashTasks on successful issue creation.
+	upstashID string
 }
 
 const cacheTTL = 5 * time.Minute
@@ -217,7 +221,7 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 		project := cached.Project
 		project.Items = cached.Items
 		app.project = project
-		app.persons = grouping.GroupByPerson(project.Items, config.TeamLogins(), app.currentStrategy(), app.displayNames(), app.focusSets())
+		app.persons = app.regroup()
 		app.board = NewBoardModel(app.persons)
 		app.board.SetAnnotations(app.annotations)
 		app.refreshBoardPersonNotes()
@@ -332,7 +336,11 @@ func (m AppModel) fetchData() tea.Cmd {
 			epic.ParentNumbers = pn
 			strategy = epic
 		}
-		persons := grouping.GroupByPerson(project.Items, m.config.TeamLogins(), strategy, m.displayNames(), m.focusSets())
+		items := project.Items
+		if up := m.upstashItems(); len(up) > 0 {
+			items = append(append([]model.ProjectItem(nil), items...), up...)
+		}
+		persons := grouping.GroupByPerson(items, m.config.TeamLogins(), strategy, m.displayNames(), m.focusSets())
 		return fetchDoneMsg{project: project, persons: persons}
 	}
 }
@@ -530,7 +538,59 @@ func (m AppModel) currentStrategy() grouping.Strategy {
 }
 
 func (m AppModel) regroup() []model.PersonGroup {
-	return grouping.GroupByPerson(m.project.Items, m.config.TeamLogins(), m.currentStrategy(), m.displayNames(), m.focusSets())
+	var items []model.ProjectItem
+	if m.project != nil {
+		items = m.project.Items
+	}
+	if up := m.upstashItems(); len(up) > 0 {
+		// Upstash items render as standalone (no parent / no epic bucket)
+		// under the configured `me` login. They append after GH items so
+		// epic groupings stay intact.
+		items = append(append([]model.ProjectItem(nil), items...), up...)
+	}
+	return grouping.GroupByPerson(items, m.config.TeamLogins(), m.currentStrategy(), m.displayNames(), m.focusSets())
+}
+
+// upstashItems materializes plan.UpstashTasks as synthetic ProjectItems
+// assigned to config.Me so GroupByPerson buckets them correctly. Returns
+// nil if no `me` is configured — without an assignee, GroupByPerson would
+// hide them under "unassigned" which is misleading for personal items.
+func (m AppModel) upstashItems() []model.ProjectItem {
+	if m.config.Me == "" || m.plan == nil || len(m.plan.UpstashTasks) == 0 {
+		return nil
+	}
+	out := make([]model.ProjectItem, 0, len(m.plan.UpstashTasks))
+	for _, t := range m.plan.UpstashTasks {
+		title, body := splitTitleBody(t.Text)
+		status := t.Status
+		if status == "" {
+			status = "Todo"
+		}
+		out = append(out, model.ProjectItem{
+			ID:        t.Id,
+			Title:     title,
+			Body:      body,
+			State:     "open",
+			Status:    status,
+			Assignees: []string{m.config.Me},
+			Source:    model.SourceUpstash,
+		})
+	}
+	return out
+}
+
+// splitTitleBody pulls the first non-empty line as title and keeps the
+// rest as body. Mirrors the convention :ship's editor uses: the first
+// line is what shows in lists; the rest is detail.
+func splitTitleBody(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ""
+	}
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		return strings.TrimSpace(text[:i]), strings.TrimSpace(text[i+1:])
+	}
+	return text, ""
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -596,14 +656,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		text := strings.TrimRight(string(data), "\n")
 
-		// Workflow editors (:promote, :ship) have post-save logic distinct
+		// Workflow editors (:ship, :github) have post-save logic distinct
 		// from the in-place plan-item editor; route them here before the
 		// default plan-item handling below.
 		switch msg.purpose {
-		case editorPurposePromote:
-			return m.finalizePromote(text, msg.originalContent, msg.idx)
 		case editorPurposeShip:
 			return m.finalizeShip(text, msg.originalContent, msg.idx)
+		case editorPurposeGithub:
+			return m.finalizeGithub(text, msg.originalContent, msg.upstashID)
 		case editorPurposeReflect:
 			return m.finalizeReflect(text, msg.originalContent, msg.month)
 		}
@@ -931,6 +991,10 @@ func (m AppModel) openInBrowser() (tea.Model, tea.Cmd) {
 	var url string
 	target := m.selectedTarget()
 	if target != nil {
+		if target.IsUpstash() {
+			m.statusMsg = "No remote view — this row lives only in your local/upstash store. Run :github to elevate it to a GitHub issue."
+			return m, nil
+		}
 		url = target.URL
 	}
 	if url == "" {
@@ -1001,12 +1065,14 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdResolveNotes(true)
 	case "sub":
 		return m.cmdSub(cmd.Args)
-	case "promote":
-		return m.cmdPromote(cmd.Args)
 	case "elevate":
 		return m.cmdElevate(cmd.Args)
 	case "ship":
 		return m.cmdShip(cmd.Args)
+	case "github", "gh":
+		return m.cmdGithub(cmd.Args)
+	case "start":
+		return m.cmdStart(cmd.Args)
 	case "del", "delete":
 		return m.cmdDelete(cmd.Args)
 	case "stats":
@@ -1092,6 +1158,11 @@ func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
 		newStatus = strings.Join(args, " ")
 	}
 
+	if target.IsUpstash() {
+		m.statusMsg = "This row has no GitHub issue yet — run :github first to elevate it."
+		return m, nil
+	}
+
 	matchedStatus := matchStatus(newStatus, m.project.StatusField.Options)
 	if matchedStatus == "" {
 		available := make([]string, len(m.project.StatusField.Options))
@@ -1163,6 +1234,11 @@ func (m AppModel) cmdComment(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if target.IsUpstash() {
+		m.statusMsg = "This row has no GitHub issue yet — run :github first."
+		return m, nil
+	}
+
 	if body == "" {
 		m.statusMsg = "Empty comment"
 		return m, nil
@@ -1222,6 +1298,11 @@ func (m AppModel) cmdAssign(args []string) (tea.Model, tea.Cmd) {
 
 	if target == nil {
 		m.statusMsg = "No issue selected. Use :assign #N @Name or select an issue first"
+		return m, nil
+	}
+
+	if target.IsUpstash() {
+		m.statusMsg = "This row has no GitHub issue yet — run :github first."
 		return m, nil
 	}
 
@@ -1513,10 +1594,10 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("Enter") + "Toggle done (focus / today / breakdown / target items)",
 		"  " + key(":goal \"text\"") + "Add to week focus (or :goal #N, max 3)",
 		"  " + key(":sub \"text\"") + "Add breakdown item to selected goal",
-		"  " + key(":promote N") + "Promote hibana note → today (vim edit pass)",
+		"  " + key(":ship N") + "Ship hibana note → board (vim edit pass; lands as upstash item under your name)",
+		"  " + key(":github") + "(board) Elevate selected upstash row to a GitHub issue (template editor)",
+		"  " + key(":start <slug>") + "(board) tmux session for cursor's GH issue, named <num>-<slug>",
 		"  " + key(":elevate") + "Elevate breakdown item under week-focus → today",
-		"  " + key(":ship N") + "Ship today row → issue + tmux session (template editor)",
-		"  " + key(":ship <slug>") + "(board mode) → tmux session for cursor's issue, named <num>-<slug>",
 		"  " + key(":today \"task\"") + "Add to today (or :today #N)",
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
@@ -2378,19 +2459,6 @@ func (m AppModel) cmdSub(args []string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cmdPromote is `:promote N` — graduates a hibana note to a today todo
-// via a vim edit pass. Only operates on the hibana panel. To move a
-// week-focus breakdown sub-item to today, use `:elevate` instead.
-func (m AppModel) cmdPromote(args []string) (tea.Model, tea.Cmd) {
-	idx := resolveHibanaIdx(args, &m)
-	if idx < 0 || idx >= len(m.plan.Scratch) {
-		m.statusMsg = "Usage: :promote <N> (1-indexed into hibana panel). To move a breakdown item to today, use :elevate."
-		return m, nil
-	}
-	text := m.plan.Scratch[idx].Text
-	return m.launchEditorForPurpose(text, editorPurposePromote, idx, "tack-promote-*.md")
-}
-
 // cmdElevate is the legacy "lift a week-focus breakdown sub-item into
 // today" flow, formerly the no-arg form of `:promote`. Renamed so the
 // two motions don't share a verb.
@@ -2432,64 +2500,79 @@ func resolveHibanaIdx(args []string, m *AppModel) int {
 	return fi.focusIdx
 }
 
-// cmdShip dispatches to either the today-flow or the board-flow,
-// depending on which view the user is in.
-//
-//   - viewPlan / today panel: `:ship N` (or `:ship` on cursor row) opens
-//     the ship template in vim and runs the full orchestrator on save.
-//   - viewBoard: `:ship <slug>` creates a tmux session named
-//     `<issue-num>-<slug>` for the cursor's project item. No editor,
-//     no template, no `gh issue create` — the issue already exists.
+// cmdShip is the hibana → board verb. It graduates a hibana note: opens
+// the note in vim for one last edit, then on save deletes the hibana
+// row and creates an upstash-backed board item under config.Me. No
+// GitHub call — that's :github's job.
 func (m AppModel) cmdShip(args []string) (tea.Model, tea.Cmd) {
-	if m.view == viewBoard {
-		return m.cmdShipBoard(args)
+	if m.config.Me == "" {
+		m.statusMsg = "Set `me: <your-github-login>` in config so :ship knows whose board to land on."
+		return m, nil
 	}
-	return m.cmdShipToday(args)
+	idx := resolveHibanaIdx(args, &m)
+	if idx < 0 || idx >= len(m.plan.Scratch) {
+		m.statusMsg = "Usage: :ship <N> (1-indexed into hibana panel) or run from the hibana cursor."
+		return m, nil
+	}
+	text := m.plan.Scratch[idx].Text
+	return m.launchEditorForPurpose(text, editorPurposeShip, idx, "tack-ship-*.md")
 }
 
-func (m AppModel) cmdShipToday(args []string) (tea.Model, tea.Cmd) {
-	idx := resolveTodayIdx(args, &m)
-	if idx < 0 || idx >= len(m.plan.Today) {
-		m.statusMsg = "Usage: :ship <N> (1-indexed into today panel)"
-		return m, nil
-	}
-	if m.plan.Today[idx].IssueNum > 0 {
-		m.statusMsg = fmt.Sprintf("Today #%d already shipped as #%d", idx+1, m.plan.Today[idx].IssueNum)
-		return m, nil
-	}
-
-	tpl := ship.RenderTemplate(m.plan.Today[idx], ship.RenderOptions{
-		DefaultRepo: defaultShipRepo(m.config),
-		DefaultHost: "aws",
-	})
-	return m.launchEditorForPurpose(tpl, editorPurposeShip, idx, "tack-ship-*.md")
-}
-
-// cmdShipBoard handles :ship <slug> from the board view. The cursor
-// must be on a project item (not an epic header). Slug is required —
-// it's the human-friendly half of the session name. We never invent
-// one because the user is best-positioned to pick something memorable.
-func (m AppModel) cmdShipBoard(args []string) (tea.Model, tea.Cmd) {
-	if len(args) == 0 {
-		m.statusMsg = "Usage: :ship <slug> — slug is a 1-2 word identifier appended to the issue number (e.g., :ship multicat → 28151-multicat)"
-		return m, nil
-	}
-	slug := strings.TrimSpace(strings.Join(args, "-"))
-	slug = sanitizeSlug(slug)
-	if slug == "" {
-		m.statusMsg = "Usage: :ship <slug> — slug must be alphanumeric (with optional hyphens)"
+// cmdGithub elevates an upstash-backed board row to a real GitHub issue.
+// Cursor must be on an upstash item (Source==SourceUpstash); GH-backed
+// rows already have an issue and don't need elevation.
+func (m AppModel) cmdGithub(args []string) (tea.Model, tea.Cmd) {
+	_ = args
+	if m.view != viewBoard {
+		m.statusMsg = ":github runs on a board row — switch with :board first."
 		return m, nil
 	}
 	issue := m.board.SelectedIssue()
 	if issue == nil {
-		m.statusMsg = "Move the cursor onto a project item before running :ship <slug>"
+		m.statusMsg = "Move the cursor onto a board row before :github."
+		return m, nil
+	}
+	if !issue.IsUpstash() {
+		m.statusMsg = fmt.Sprintf("#%d is already a GitHub issue.", issue.Number)
 		return m, nil
 	}
 
-	// Default to aws — that's where actual work runs. If the user's
-	// `repos:` config has an explicit entry for this issue's repo,
-	// use it; otherwise leave the path empty so `ts new` runs from
-	// the host's default cwd (no fragile fallback to ~/work/<base>).
+	// Pre-fill the template Body from the upstash item's combined text;
+	// the user fills Title since we never invent one for a real issue.
+	body := strings.TrimSpace(issue.Title)
+	if issue.Body != "" {
+		body = strings.TrimSpace(issue.Title + "\n\n" + issue.Body)
+	}
+	tpl := ship.RenderTemplate(model.TodoItem{Text: body}, ship.RenderOptions{
+		DefaultRepo: defaultShipRepo(m.config),
+		DefaultHost: "aws",
+	})
+	return m.launchEditorForGithub(tpl, issue.ID)
+}
+
+// cmdStart creates a tmux session for the cursor's GitHub project item.
+// Renamed from the legacy `:ship <slug>` board verb — `:ship` now means
+// "land on board," so the session-spawning verb gets its own name.
+func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.statusMsg = "Usage: :start <slug> — appended to the issue number for the session name (e.g., :start multicat → 28151-multicat)"
+		return m, nil
+	}
+	slug := sanitizeSlug(strings.Join(args, "-"))
+	if slug == "" {
+		m.statusMsg = "Usage: :start <slug> — slug must be alphanumeric (with optional hyphens)"
+		return m, nil
+	}
+	issue := m.board.SelectedIssue()
+	if issue == nil {
+		m.statusMsg = "Move the cursor onto a project item before running :start <slug>"
+		return m, nil
+	}
+	if issue.IsUpstash() {
+		m.statusMsg = "This row has no GitHub issue yet — run :github first to create one."
+		return m, nil
+	}
+
 	host := "aws"
 	repoPath := ""
 	if p, ok := m.config.Repos[issue.Repo]; ok && p != "" {
@@ -2504,7 +2587,7 @@ func (m AppModel) cmdShipBoard(args []string) (tea.Model, tea.Cmd) {
 	}
 	res, err := ship.CreateSession(sshRunner, host, sessionName, repoPath, ticket)
 	if err != nil {
-		m.statusMsg = fmt.Sprintf("Ship: %s", err)
+		m.statusMsg = fmt.Sprintf("Start: %s", err)
 		return m, nil
 	}
 	m.statusMsg = ship.FormatStatus(ship.OrchestrateResult{
@@ -2534,24 +2617,6 @@ func sanitizeSlug(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
-}
-
-func resolveTodayIdx(args []string, m *AppModel) int {
-	if len(args) > 0 {
-		n, err := strconv.Atoi(args[0])
-		if err != nil || n < 1 {
-			return -1
-		}
-		return n - 1
-	}
-	if m.planView.section != sectionToday {
-		return -1
-	}
-	fi := m.planView.currentFlat()
-	if fi == nil || fi.header {
-		return -1
-	}
-	return fi.focusIdx
 }
 
 // defaultShipRepo picks the repo to pre-fill the ship template's Repo
@@ -2595,55 +2660,115 @@ func (m AppModel) launchEditorForPurpose(text string, purpose editorPurpose, idx
 	})
 }
 
-// finalizePromote handles a saved :promote edit. Aborts on either:
-//   - empty file (user explicitly cleared it), or
-//   - file unchanged from the prefilled note text (`:q!` from vim — never saved).
-func (m AppModel) finalizePromote(text, original string, idx int) (tea.Model, tea.Cmd) {
-	if strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(original) {
-		m.statusMsg = "Promote canceled."
+// launchEditorForGithub is the :github-flow variant of launchEditorForPurpose.
+// It records the upstash row's Id in the resulting message so finalizeGithub
+// can locate the source row to remove on success.
+func (m AppModel) launchEditorForGithub(text, upstashID string) (tea.Model, tea.Cmd) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vim"
+	}
+	f, err := os.CreateTemp("", "tack-github-*.md")
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating temp file: %s", err)
 		return m, nil
 	}
-	if idx < 0 || idx >= len(m.plan.Scratch) {
-		m.statusMsg = "Promote target gone (note removed?)"
-		return m, nil
+	tmpFile := f.Name()
+	if text != "" {
+		f.WriteString(text)
 	}
-	note := m.plan.Scratch[idx]
+	f.Close()
 
-	// Add to today first; if the delete fails we'd rather have a duplicate
-	// than lose the user's edit.
-	m.plan.Today = append(m.plan.Today, model.TodoItem{
-		Text:      text,
-		CreatedAt: time.Now(),
+	c := exec.Command(editor, tmpFile)
+	original := text
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{
+			tmpPath:         tmpFile,
+			purpose:         editorPurposeGithub,
+			err:             err,
+			originalContent: original,
+			upstashID:       upstashID,
+		}
 	})
-	if err := m.scratchDelete(note); err != nil {
-		m.statusMsg = fmt.Sprintf("Promoted (warning: hibana delete failed: %s)", err)
-	} else {
-		m.statusMsg = "Promoted to today."
-	}
-	m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
-	m.planView.SetData(m.plan, m.project)
-	m.planView.SetSection(sectionToday)
-	m.view = viewPlan
-	return m, nil
 }
 
-// finalizeShip handles a saved :ship template. Aborts on either:
+// finalizeShip handles a saved :ship edit (hibana → upstash board item).
+// Aborts on:
 //   - empty file (user explicitly cleared it), or
-//   - file unchanged from the prefilled template (`:q!` from vim — never saved).
+//   - file unchanged from the prefilled note text (`:q!` from vim — never saved).
 //
-// In both cases nothing happens: no gh, no ssh, today row stays put.
+// On success the hibana row is deleted, an UpstashTask is appended to the
+// plan, and the view switches to the board so the user sees the new row.
 func (m AppModel) finalizeShip(text, original string, idx int) (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(original) {
 		m.statusMsg = "Ship canceled."
 		return m, nil
 	}
-	if idx < 0 || idx >= len(m.plan.Today) {
-		m.statusMsg = "Ship target gone (today row removed?)"
+	if idx < 0 || idx >= len(m.plan.Scratch) {
+		m.statusMsg = "Ship target gone (note removed?)"
+		return m, nil
+	}
+	note := m.plan.Scratch[idx]
+
+	now := time.Now()
+	task := model.UpstashTask{
+		Id:        note.Id,
+		Text:      text,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if task.Id == "" {
+		// Legacy unmigrated note had no hibana id; mint one so the
+		// board item still has a stable handle for :github / :delete.
+		task.Id = fmt.Sprintf("ups-%d", now.UnixNano())
+	}
+	m.plan.UpstashTasks = append(m.plan.UpstashTasks, task)
+
+	if err := m.scratchDelete(note); err != nil {
+		m.statusMsg = fmt.Sprintf("Shipped (warning: hibana delete failed: %s)", err)
+	} else {
+		m.statusMsg = "Shipped to board."
+	}
+	m.plan.Scratch = append(m.plan.Scratch[:idx], m.plan.Scratch[idx+1:]...)
+
+	if m.planStore != nil {
+		_ = m.planStore.SavePlan(m.plan)
+	}
+
+	m.persons = m.regroup()
+	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
+	m.planView.SetData(m.plan, m.project)
+	m.view = viewBoard
+	// Position the board on the user's own person tab so the new item is
+	// visible without further navigation.
+	for i, p := range m.persons {
+		if p.Login == m.config.Me {
+			m.board.personIdx = i
+			m.board.cursorIdx = 0
+			m.board.scrollOffset = 0
+			m.board.rebuildVisible()
+			break
+		}
+	}
+	return m, nil
+}
+
+// finalizeGithub handles a saved :github template. Aborts on empty/unsaved.
+// On success: runs the existing ship orchestrator, deletes the source
+// UpstashTask, and synthesizes a GH-backed ProjectItem so the row
+// appears in place of the upstash item without waiting for a refetch.
+func (m AppModel) finalizeGithub(text, original, upstashID string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(original) {
+		m.statusMsg = "Github canceled."
 		return m, nil
 	}
 	form, err := ship.Parse(text)
 	if err != nil {
-		m.statusMsg = fmt.Sprintf("Ship: %s", err)
+		m.statusMsg = fmt.Sprintf("Github: %s", err)
 		return m, nil
 	}
 
@@ -2660,25 +2785,79 @@ func (m AppModel) finalizeShip(text, original string, idx int) (tea.Model, tea.C
 		ProjectURL: m.config.Project,
 		RepoPaths:  m.config.Repos,
 	}
-	res, oerr := ship.Orchestrate(gh, sshR, form, cfg, &m.plan.Today[idx])
+	res, oerr := ship.Orchestrate(gh, sshR, form, cfg, nil)
 	if oerr != nil {
-		// Partial state surfaced — todo may have IssueNum stamped already.
 		if res.Issue.Number > 0 {
-			m.statusMsg = fmt.Sprintf("Ship partial: created #%d but %s", res.Issue.Number, oerr)
-		} else {
-			m.statusMsg = fmt.Sprintf("Ship failed: %s", oerr)
+			m.statusMsg = fmt.Sprintf("Github partial: created #%d but %s", res.Issue.Number, oerr)
+			m.removeUpstashTask(upstashID)
+			m.appendGHItemFromForm(res.Issue, form)
+			m.persons = m.regroup()
+			m.board.SetPersons(m.persons)
+			return m, nil
 		}
-		m.planView.SetData(m.plan, m.project)
-		m.planView.SetSection(sectionToday)
-		m.view = viewPlan
+		m.statusMsg = fmt.Sprintf("Github failed: %s", oerr)
 		return m, nil
 	}
 
+	m.removeUpstashTask(upstashID)
+	m.appendGHItemFromForm(res.Issue, form)
+
+	if m.planStore != nil {
+		_ = m.planStore.SavePlan(m.plan)
+	}
+
+	m.persons = m.regroup()
+	m.board.SetPersons(m.persons)
+	m.refreshBoardPersonNotes()
 	m.statusMsg = ship.FormatStatus(res, form.Host)
-	m.planView.SetData(m.plan, m.project)
-	m.planView.SetSection(sectionToday)
-	m.view = viewPlan
 	return m, nil
+}
+
+// removeUpstashTask drops the task with the given id. No-op if not found.
+func (m *AppModel) removeUpstashTask(id string) {
+	if id == "" {
+		return
+	}
+	out := m.plan.UpstashTasks[:0]
+	for _, t := range m.plan.UpstashTasks {
+		if t.Id == id {
+			continue
+		}
+		out = append(out, t)
+	}
+	m.plan.UpstashTasks = out
+}
+
+// appendGHItemFromForm injects a freshly-created GH issue into project.Items
+// so the board renders it immediately, without waiting for the next
+// FetchProject. The next refresh will replace this stub with the full data.
+func (m *AppModel) appendGHItemFromForm(ref ship.IssueRef, form ship.ShipForm) {
+	if m.project == nil || ref.Number == 0 {
+		return
+	}
+	title := form.Title
+	if title == "" {
+		title = strings.SplitN(form.Body, "\n", 2)[0]
+	}
+	url := ref.URL
+	if url == "" {
+		url = fmt.Sprintf("https://github.com/%s/issues/%d", form.Repo, ref.Number)
+	}
+	assignees := []string(nil)
+	if m.config.Me != "" {
+		assignees = []string{m.config.Me}
+	}
+	m.project.Items = append(m.project.Items, model.ProjectItem{
+		ID:        ref.NodeID,
+		Title:     title,
+		Number:    ref.Number,
+		URL:       url,
+		Body:      form.Body,
+		State:     "open",
+		Status:    "Todo",
+		Assignees: assignees,
+		Repo:      form.Repo,
+	})
 }
 
 func (m AppModel) cmdStats() (tea.Model, tea.Cmd) {

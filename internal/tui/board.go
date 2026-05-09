@@ -325,20 +325,31 @@ func (b *BoardModel) View(width, height int) string {
 			}
 
 			done := isDone(item.issue.Status, item.issue.State)
-			num := issueNumStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
+			var num string
+			if item.issue.IsUpstash() {
+				// Upstash items have no GitHub number; mark them with a glyph
+				// so the user can tell at a glance what's elevation-ready.
+				num = helpStyle.Render("◇")
+			} else {
+				num = issueNumStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
+			}
 			title := truncate(item.issue.Title, width-30)
 			status := renderStatus(item.issue.Status, item.issue.State)
 			if done {
 				doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
-				num = doneStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
+				if !item.issue.IsUpstash() {
+					num = doneStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
+				}
 				title = doneStyle.Render(title)
 			} else {
 				title = issueTitleStyle.Render(title)
 			}
 			noteHint := ""
-			notes := b.notesForIssue(item.issue.Number)
-			if len(notes) > 0 && !b.showNotes {
-				noteHint = helpStyle.Render("  ✎")
+			if !item.issue.IsUpstash() {
+				notes := b.notesForIssue(item.issue.Number)
+				if len(notes) > 0 && !b.showNotes {
+					noteHint = helpStyle.Render("  ✎")
+				}
 			}
 			line := fmt.Sprintf("  %s %s %s  %s%s", branch, num, title, status, noteHint)
 			sb.WriteString(cursor + line)
@@ -346,7 +357,7 @@ func (b *BoardModel) View(width, height int) string {
 		sb.WriteString("\n")
 
 		// Show annotations inline when toggled on
-		if b.showNotes && item.kind == kindIssue {
+		if b.showNotes && item.kind == kindIssue && !item.issue.IsUpstash() {
 			notes := b.notesForIssue(item.issue.Number)
 			noteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
 			for _, n := range notes {
