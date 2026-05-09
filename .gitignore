@@ -1,3 +1,4 @@
 tack
 *.exe
 config.local.yaml
+.claude/
