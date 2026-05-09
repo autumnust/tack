@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Discuss</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161922;
+    --panel-2: #1d2230;
+    --fg: #e6e6e6;
+    --muted: #8a93a6;
+    --accent: #7aa2f7;
+    --user: #b4f9a3;
+    --asst: #e6e6e6;
+    --seed: #ffd479;
+    --border: #2a2f3d;
+    --danger: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    font-size: 14px; line-height: 1.55;
+  }
+  body { display: flex; flex-direction: column; }
+  header {
+    display: flex; align-items: center; gap: 1rem;
+    padding: .65rem 1rem; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .03em; color: var(--muted); }
+  header .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header button {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+    padding: .35rem .8rem; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  header button:hover { background: #232838; }
+  header button.danger { color: var(--danger); border-color: var(--danger); }
+
+  #scrollback {
+    flex: 1; overflow-y: auto; padding: 1.25rem 1.5rem;
+    display: flex; flex-direction: column; gap: 1.1rem;
+  }
+  .turn { max-width: 880px; }
+  .turn .role { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .35rem; }
+  .turn .body { white-space: pre-wrap; word-wrap: break-word; }
+  .turn.user .body { color: var(--user); }
+  .turn.assistant .body { color: var(--asst); }
+  .turn.seed { background: var(--panel); border: 1px solid var(--border); padding: .75rem 1rem; border-radius: 8px; }
+  .turn.seed .role { color: var(--seed); }
+  .turn.seed .meta { font-size: 12px; color: var(--muted); margin-bottom: .35rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  .turn .body pre {
+    background: var(--panel); border: 1px solid var(--border); padding: .65rem .8rem;
+    border-radius: 6px; overflow-x: auto; font-size: 12.5px;
+  }
+
+  footer {
+    border-top: 1px solid var(--border); padding: .75rem 1rem; background: var(--panel);
+    display: flex; gap: .65rem; align-items: flex-end;
+  }
+  textarea {
+    flex: 1; resize: none; min-height: 44px; max-height: 200px;
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+    padding: .6rem .75rem; border-radius: 6px; font-family: inherit; font-size: 14px;
+    outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  footer button {
+    background: var(--accent); color: #0b0d12; border: 0;
+    padding: .55rem 1.1rem; border-radius: 6px; font-weight: 600; font-size: 13px; cursor: pointer;
+  }
+  footer button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .status { font-size: 12px; color: var(--muted); padding: .35rem 1rem; }
+  .status.error { color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1>discuss</h1>
+  <span class="id" id="discussion-id"></span>
+  <span class="spacer"></span>
+  <button class="danger" id="close-btn" title="End discussion and close server">close</button>
+</header>
+<div id="scrollback"></div>
+<div class="status" id="status"></div>
+<footer>
+  <textarea id="input" placeholder="Ask something. ⌘/Ctrl+Enter to send." rows="2"></textarea>
+  <button id="send-btn">Send</button>
+</footer>
+
+<script>
+(() => {
+  const scrollback = document.getElementById('scrollback');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send-btn');
+  const closeBtn = document.getElementById('close-btn');
+  const statusEl = document.getElementById('status');
+  const idEl = document.getElementById('discussion-id');
+
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg || '';
+    statusEl.classList.toggle('error', !!isError);
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  // Minimal markdown: render ```fenced``` as <pre>; everything else verbatim.
+  function renderMarkdown(text) {
+    const frag = document.createDocumentFragment();
+    const parts = text.split(/```/);
+    parts.forEach((part, i) => {
+      if (i % 2 === 1) {
+        // code fence
+        const pre = document.createElement('pre');
+        // strip first-line lang hint if present
+        const lines = part.split('\n');
+        if (lines.length > 1 && /^[a-zA-Z0-9+_-]*$/.test(lines[0])) {
+          lines.shift();
+        }
+        pre.textContent = lines.join('\n').replace(/^\n+|\n+$/g, '');
+        frag.appendChild(pre);
+      } else if (part) {
+        const span = document.createElement('span');
+        span.textContent = part;
+        frag.appendChild(span);
+      }
+    });
+    return frag;
+  }
+
+  function addTurn(role, text, meta) {
+    const turn = el('div', `turn ${role}`);
+    if (meta) {
+      const m = el('div', 'meta', meta);
+      turn.appendChild(m);
+    }
+    const r = el('div', 'role', role);
+    const b = el('div', 'body');
+    b.appendChild(renderMarkdown(text || ''));
+    turn.appendChild(r);
+    turn.appendChild(b);
+    scrollback.appendChild(turn);
+    scrollback.scrollTop = scrollback.scrollHeight;
+    return b; // for streaming append
+  }
+
+  function rerender(bodyEl, text) {
+    bodyEl.replaceChildren();
+    bodyEl.appendChild(renderMarkdown(text));
+    scrollback.scrollTop = scrollback.scrollHeight;
+  }
+
+  async function loadState() {
+    try {
+      const r = await fetch('/api/state');
+      if (!r.ok) throw new Error(`state ${r.status}`);
+      const s = await r.json();
+      idEl.textContent = s.discussion_id || '';
+      (s.seed_notes || []).forEach((seed, i) => {
+        const meta = `Note ${i + 1} · ${seed.created_at || ''} · ${seed.note_id || ''}`;
+        addTurn('seed', seed.text || '', meta);
+      });
+      (s.transcript || []).forEach(t => addTurn(t.role, t.text));
+      if (s.closed) {
+        sendBtn.disabled = true;
+        input.disabled = true;
+        setStatus('Discussion closed.');
+      }
+    } catch (e) {
+      setStatus(`Failed to load state: ${e.message}`, true);
+    }
+  }
+
+  async function sendTurn() {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    sendBtn.disabled = true;
+    addTurn('user', text);
+    const asst = addTurn('assistant', '');
+    let buf = '';
+    setStatus('thinking…');
+    try {
+      const r = await fetch('/api/turn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) {
+        const err = await r.text();
+        throw new Error(`${r.status}: ${err}`);
+      }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let leftover = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        leftover += dec.decode(value, { stream: true });
+        const lines = leftover.split('\n');
+        leftover = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (!payload) continue;
+          let evt;
+          try { evt = JSON.parse(payload); } catch { continue; }
+          if (evt.type === 'text') {
+            buf += evt.text;
+            rerender(asst, buf);
+          } else if (evt.type === 'error') {
+            setStatus(`Error: ${evt.msg}`, true);
+          } else if (evt.type === 'done') {
+            setStatus('');
+          }
+        }
+      }
+    } catch (e) {
+      setStatus(`Stream failed: ${e.message}`, true);
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  async function closeDiscussion() {
+    if (!confirm('Close this discussion? The TUI will mark it ended.')) return;
+    try {
+      await fetch('/api/close', { method: 'POST' });
+    } catch {}
+    sendBtn.disabled = true;
+    input.disabled = true;
+    setStatus('Discussion closed.');
+  }
+
+  sendBtn.addEventListener('click', sendTurn);
+  closeBtn.addEventListener('click', closeDiscussion);
+  input.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      sendTurn();
+    }
+  });
+
+  loadState().then(() => input.focus());
+})();
+</script>
+</body>
+</html>

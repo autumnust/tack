@@ -2234,6 +2234,49 @@ func TestDel_FallsBackToCursorWhenNoSelection(t *testing.T) {
 	}
 }
 
+// :discuss preflight checks: API key, section, and at-least-one-note.
+func TestDiscuss_RequiresAPIKey(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.plan.Scratch = []model.ScratchNote{{Text: "n1"}}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "discuss")
+	assertStatus(t, app, "anthropic_api_key")
+}
+
+func TestDiscuss_OnlyOnHibanaSection(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.config.Discuss.AnthropicAPIKey = "stub"
+	app.plan.Scratch = []model.ScratchNote{{Text: "n1"}}
+	app.plan.Today = []model.TodoItem{{Text: "t1"}}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionToday)
+
+	app = sendCommand(t, app, "discuss")
+	assertStatus(t, app, "Hibana")
+}
+
+func TestDiscuss_NeedsAtLeastOneNote(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.config.Discuss.AnthropicAPIKey = "stub"
+	app.plan.Scratch = nil
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "discuss")
+	assertStatus(t, app, "Nothing to discuss")
+}
+
 func TestEscClearsSelection(t *testing.T) {
 	app := newTestApp()
 	app.width = 80

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/autumnust/tack/internal/cache"
+	"github.com/autumnust/tack/internal/discuss"
 	"github.com/autumnust/tack/internal/github"
 	"github.com/autumnust/tack/internal/grouping"
 	"github.com/autumnust/tack/internal/hibana"
@@ -83,6 +85,13 @@ type AppModel struct {
 	// inject fakes here to avoid touching GitHub or remote hosts.
 	shipGH  ship.GHRunner
 	shipSSH ship.SSHRunner
+
+	// discussSrv is the active :discuss browser-chat server, or nil. Only
+	// one runs at a time; a second :discuss while one is alive errors.
+	discussSrv *discuss.Server
+	// planDir is the resolved (~-expanded) planning directory path. Used
+	// by :discuss to place per-discussion log files.
+	planDir string
 }
 
 // Messages
@@ -160,6 +169,12 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	if planDir == "" {
 		planDir = "~/.tack"
 	}
+	if strings.HasPrefix(planDir, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			planDir = filepath.Join(home, planDir[1:])
+		}
+	}
+	app.planDir = planDir
 	redisURL := config.Planning.RedisURL
 	if redisURL == "" {
 		redisURL = os.Getenv("UPSTASH_REDIS_REST_URL")
@@ -1079,6 +1094,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdElevate(cmd.Args)
 	case "ship":
 		return m.cmdShip(cmd.Args)
+	case "discuss":
+		return m.cmdDiscuss(cmd.Args)
 	case "github", "gh":
 		return m.cmdGithub(cmd.Args)
 	case "start":
@@ -1629,9 +1646,11 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
 		"  " + key(":target \"text\"") + "Add monthly target",
 		"  " + key(":reflect") + "Seal oldest pending month → Obsidian vault (opens editor)",
+		"  " + key("space") + "(Hibana) Toggle row selection — `:del` / `:discuss` consume it",
+		"  " + key(":discuss") + "(Hibana) Open browser chat seeded with selected note(s)",
 		"  " + key(":mv <tab>") + "Move item to tab (today/goal/hibana/target)",
 		"  " + key(":mv goal N") + "Move item as sub-item of goal #N",
-		"  " + key(":del") + "Delete selected item",
+		"  " + key(":del") + "Delete selected item(s)",
 		"  " + key(":recap") + "Generate weekly recap",
 		"  " + key(":stats") + "Show command usage stats",
 		"",
@@ -2057,6 +2076,87 @@ func (m AppModel) cmdHibana(args []string) (tea.Model, tea.Cmd) {
 	m.planView.SetSection(sectionHibana)
 	m.view = viewPlan
 	return m, nil
+}
+
+// cmdDiscuss collects the selected (or cursor) Hibana note(s) and starts
+// a loopback HTTP server that hosts a chat UI in the user's browser.
+// The transcript persists into <planning.dir>/discussions/<id>.jsonl.
+// Single-discussion-at-a-time: a second :discuss while one is open
+// errors with a hint to close the existing tab.
+func (m AppModel) cmdDiscuss(args []string) (tea.Model, tea.Cmd) {
+	_ = args // future: optional system-prompt flavor selector
+
+	if m.view != viewPlan || m.planView.section != sectionHibana {
+		m.statusMsg = ":discuss only works on the Hibana section"
+		return m, nil
+	}
+	if m.config.Discuss.AnthropicAPIKey == "" {
+		m.statusMsg = ":discuss requires discuss.anthropic_api_key in config.yaml"
+		return m, nil
+	}
+	if m.discussSrv != nil && !m.discussSrv.IsClosed() {
+		m.statusMsg = fmt.Sprintf("Discussion already open at %s — close that tab first", m.discussSrv.URL())
+		return m, nil
+	}
+
+	var picks []model.ScratchNote
+	if m.planView.HasSelection() {
+		for _, idx := range m.planView.SelectedHibanaIndices() {
+			if idx >= 0 && idx < len(m.plan.Scratch) {
+				picks = append(picks, m.plan.Scratch[idx])
+			}
+		}
+	} else if fi := m.planView.currentFlat(); fi != nil && fi.focusIdx >= 0 && fi.focusIdx < len(m.plan.Scratch) {
+		picks = append(picks, m.plan.Scratch[fi.focusIdx])
+	}
+	if len(picks) == 0 {
+		m.statusMsg = "Nothing to discuss — select notes with `space` or place the cursor on one"
+		return m, nil
+	}
+
+	seeds := make([]discuss.Seed, 0, len(picks))
+	for _, n := range picks {
+		seeds = append(seeds, discuss.Seed{
+			NoteID:    n.Id,
+			Text:      n.Text,
+			CreatedAt: n.CreatedAt,
+		})
+	}
+
+	planDir := m.planDir
+	if planDir == "" {
+		planDir = filepath.Join(os.TempDir(), "tack")
+	}
+
+	id := discuss.NewID()
+	srv, err := discuss.StartServer(discuss.Options{
+		APIKey:       m.config.Discuss.AnthropicAPIKey,
+		Model:        m.config.Discuss.Model,
+		SystemPrompt: m.config.Discuss.SystemPrompt,
+		Seeds:        seeds,
+		LogPath:      discuss.LogPath(planDir, id),
+	})
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Could not start discussion server: %s", err)
+		return m, nil
+	}
+
+	m.discussSrv = srv
+	m.planView.ClearSelection()
+
+	if openErr := discuss.OpenURL(srv.URL()); openErr != nil {
+		m.statusMsg = fmt.Sprintf("Discussion ready — open %s manually (%s)", srv.URL(), openErr)
+	} else {
+		m.statusMsg = fmt.Sprintf("Discussion open at %s (%d note%s)", srv.URL(), len(seeds), pluralS(len(seeds)))
+	}
+	return m, nil
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (m AppModel) cmdTarget(args []string) (tea.Model, tea.Cmd) {
