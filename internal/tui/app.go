@@ -853,6 +853,13 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "Notes hidden"
 		}
+	case "x":
+		m.board.ToggleShowDone()
+		if m.board.ShowingDone() {
+			m.statusMsg = "Showing done items"
+		} else {
+			m.statusMsg = "Hiding done items (x to show)"
+		}
 	case "e":
 		login := m.board.CurrentPerson()
 		if login == "" {
@@ -1553,6 +1560,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key("Enter") + "Expand/collapse epic, or drill into issue",
 		"  " + key("e") + "Edit notes for current person",
 		"  " + key("n") + "Toggle private notes on board",
+		"  " + key("x") + "Toggle show/hide done & closed rows",
 		"  " + key("Esc") + "Back (detail -> board, or cancel command)",
 		"",
 		section("Detail View"),

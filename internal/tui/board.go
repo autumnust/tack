@@ -33,6 +33,7 @@ type BoardModel struct {
 	scrollOffset int
 	viewHeight   int
 	showNotes    bool               // toggle private annotations
+	showDone     bool               // toggle done/closed rows
 	annotations  *model.Annotations // reference to annotations data
 	personNotes  map[string]bool
 }
@@ -42,6 +43,7 @@ func NewBoardModel(persons []model.PersonGroup) BoardModel {
 		persons:     persons,
 		expanded:    make(map[string]bool),
 		personNotes: make(map[string]bool),
+		showDone:    true, // matches plan view's default
 	}
 	// Expand all epics by default
 	for pi, p := range persons {
@@ -69,6 +71,15 @@ func (b *BoardModel) ToggleNotes() {
 
 func (b *BoardModel) ShowingNotes() bool {
 	return b.showNotes
+}
+
+func (b *BoardModel) ToggleShowDone() {
+	b.showDone = !b.showDone
+	b.rebuildVisible()
+}
+
+func (b *BoardModel) ShowingDone() bool {
+	return b.showDone
 }
 
 func (b *BoardModel) SetPersonNotes(presence map[string]bool) {
@@ -103,8 +114,33 @@ func (b *BoardModel) rebuildVisible() {
 		return
 	}
 	p := b.persons[b.personIdx]
+
+	// keepIssue applies the showDone toggle. Done items are hidden when
+	// showDone is off; everything else passes through.
+	keepIssue := func(it model.ProjectItem) bool {
+		if !b.showDone && isDone(it.Status, it.State) {
+			return false
+		}
+		return true
+	}
+
+	// epicHasVisibleChild reports whether the epic has at least one
+	// non-filtered child in the current showDone setting. Hide otherwise-
+	// empty epics so the filter doesn't leave dangling headers.
+	epicHasVisibleChild := func(g model.IssueGroup) bool {
+		for _, it := range g.Issues {
+			if keepIssue(it) {
+				return true
+			}
+		}
+		return false
+	}
+
 	for gi, g := range p.Groups {
 		if g.Parent != nil {
+			if !b.showDone && !epicHasVisibleChild(g) {
+				continue
+			}
 			key := epicKey(b.personIdx, gi)
 			b.visibleItems = append(b.visibleItems, listItem{
 				kind:     kindEpicHeader,
@@ -113,11 +149,17 @@ func (b *BoardModel) rebuildVisible() {
 				groupIdx: gi,
 			})
 			if b.expanded[key] {
+				visible := make([]int, 0, len(g.Issues))
 				for ii := range g.Issues {
+					if keepIssue(g.Issues[ii]) {
+						visible = append(visible, ii)
+					}
+				}
+				for n, ii := range visible {
 					b.visibleItems = append(b.visibleItems, listItem{
 						kind:     kindIssue,
 						issue:    &p.Groups[gi].Issues[ii],
-						isLast:   ii == len(g.Issues)-1,
+						isLast:   n == len(visible)-1,
 						groupIdx: gi,
 					})
 				}
@@ -125,6 +167,9 @@ func (b *BoardModel) rebuildVisible() {
 		} else {
 			// Standalone issues
 			for ii := range g.Issues {
+				if !keepIssue(g.Issues[ii]) {
+					continue
+				}
 				b.visibleItems = append(b.visibleItems, listItem{
 					kind:     kindIssue,
 					issue:    &p.Groups[gi].Issues[ii],
