@@ -105,9 +105,10 @@ type pushDoneMsg struct {
 type editorPurpose int
 
 const (
-	editorPurposePlanItem editorPurpose = iota // default — section/idx/subIdx interpreted
+	editorPurposePlanItem  editorPurpose = iota // default — section/idx/subIdx interpreted
 	editorPurposeShip                           // hibana note → upstash board item (text edit)
 	editorPurposeGithub                         // upstash board item → GH issue (template)
+	editorPurposeEditUpstash                    // edit an existing upstash board item in place
 	editorPurposeReflect                        // monthly target → sealed vault file
 )
 
@@ -664,6 +665,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.finalizeShip(text, msg.originalContent, msg.idx)
 		case editorPurposeGithub:
 			return m.finalizeGithub(text, msg.originalContent, msg.upstashID)
+		case editorPurposeEditUpstash:
+			return m.finalizeEditUpstash(text, msg.originalContent, msg.upstashID)
 		case editorPurposeReflect:
 			return m.finalizeReflect(text, msg.originalContent, msg.month)
 		}
@@ -1073,6 +1076,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdGithub(cmd.Args)
 	case "start":
 		return m.cmdStart(cmd.Args)
+	case "edit":
+		return m.cmdEdit(cmd.Args)
 	case "del", "delete":
 		return m.cmdDelete(cmd.Args)
 	case "stats":
@@ -1583,10 +1588,12 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"",
 		section("Workflow: hibana → board → GitHub → tmux"),
 		"  " + key(":ship N") + "(hibana) Graduate note to board as upstash row under your name (config.me). Vim edit pass.",
-		"  " + key(":github") + "(board) Elevate selected upstash row → real GitHub issue (template editor)",
-		"  " + key(":start <slug>") + "(board) tmux session for cursor's GH issue, named <num>-<slug>",
-		"  " + helpStyle.Render("    Upstash rows render as ◇ (no #N). :open / :mv / :c / :a require a GH issue —"),
-		"  " + helpStyle.Render("    run :github first. Today is now manual-only — add focus items via :today."),
+		"  " + key(":edit") + "(board, upstash row) Edit text in vim (mirrors hibana edit)",
+		"  " + key(":del") + "(board, upstash row) Delete the row",
+		"  " + key(":github") + "(board, upstash row) Elevate → real GitHub issue (template editor)",
+		"  " + key(":start <slug>") + "(board, GH row) tmux session for cursor's GH issue, named <num>-<slug>",
+		"  " + helpStyle.Render("    Upstash rows render as pink ◇ (no #N). Once :github'd, the row is a regular GH"),
+		"  " + helpStyle.Render("    issue — :mv / :c / :a / :open all work normally. Today is manual-only via :today."),
 		"",
 		section("Mode Switching"),
 		"  " + key(":plan") + "Switch to planning mode",
@@ -2554,6 +2561,45 @@ func (m AppModel) cmdGithub(args []string) (tea.Model, tea.Cmd) {
 	return m.launchEditorForGithub(tpl, issue.ID)
 }
 
+// cmdEdit edits the cursor's row in place. Today this only applies to
+// upstash-backed rows — GitHub issues are edited on GitHub itself
+// (:open opens them in the browser). Mirrors hibana's edit pattern:
+// vim opens with the current text, on save the UpstashTask.Text is
+// replaced and the plan is persisted.
+func (m AppModel) cmdEdit(args []string) (tea.Model, tea.Cmd) {
+	_ = args
+	if m.view != viewBoard {
+		m.statusMsg = ":edit runs on a board row — switch with :board first."
+		return m, nil
+	}
+	issue := m.board.SelectedIssue()
+	if issue == nil {
+		m.statusMsg = "Move the cursor onto a board row before :edit."
+		return m, nil
+	}
+	if !issue.IsUpstash() {
+		m.statusMsg = "GitHub issues are edited on GitHub. Press 'o' to open in browser."
+		return m, nil
+	}
+	text := upstashTaskText(m.plan, issue.ID)
+	return m.launchEditorForUpstashEdit(text, issue.ID)
+}
+
+// upstashTaskText fetches the source text of the upstash task with id.
+// Returns empty if not found — caller's editor will simply open empty
+// and a save will replace whatever's there.
+func upstashTaskText(plan *model.Plan, id string) string {
+	if plan == nil {
+		return ""
+	}
+	for _, t := range plan.UpstashTasks {
+		if t.Id == id {
+			return t.Text
+		}
+	}
+	return ""
+}
+
 // cmdStart creates a tmux session for the cursor's GitHub project item.
 // Renamed from the legacy `:ship <slug>` board verb — `:ship` now means
 // "land on board," so the session-spawning verb gets its own name.
@@ -2662,6 +2708,73 @@ func (m AppModel) launchEditorForPurpose(text string, purpose editorPurpose, idx
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{tmpPath: tmpFile, purpose: purpose, idx: idx, err: err, originalContent: original}
 	})
+}
+
+// launchEditorForUpstashEdit opens the user's editor with the upstash
+// task's current text and tags the resulting message so finalizeEditUpstash
+// can locate the row to update.
+func (m AppModel) launchEditorForUpstashEdit(text, upstashID string) (tea.Model, tea.Cmd) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vim"
+	}
+	f, err := os.CreateTemp("", "tack-upstash-edit-*.md")
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating temp file: %s", err)
+		return m, nil
+	}
+	tmpFile := f.Name()
+	if text != "" {
+		f.WriteString(text)
+	}
+	f.Close()
+
+	c := exec.Command(editor, tmpFile)
+	original := text
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{
+			tmpPath:         tmpFile,
+			purpose:         editorPurposeEditUpstash,
+			err:             err,
+			originalContent: original,
+			upstashID:       upstashID,
+		}
+	})
+}
+
+// finalizeEditUpstash applies a saved :edit edit to the upstash task
+// identified by id. Aborts on empty/unsaved (mirrors :ship and hibana
+// edit semantics).
+func (m AppModel) finalizeEditUpstash(text, original, upstashID string) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(original) {
+		m.statusMsg = "Edit canceled."
+		return m, nil
+	}
+	updated := false
+	for i := range m.plan.UpstashTasks {
+		if m.plan.UpstashTasks[i].Id == upstashID {
+			m.plan.UpstashTasks[i].Text = text
+			m.plan.UpstashTasks[i].UpdatedAt = time.Now()
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		m.statusMsg = "Edit target gone (row removed?)"
+		return m, nil
+	}
+
+	if m.planStore != nil {
+		_ = m.planStore.SavePlan(m.plan)
+	}
+
+	m.persons = m.regroup()
+	m.board.SetPersons(m.persons)
+	m.statusMsg = "Note updated."
+	return m, nil
 }
 
 // launchEditorForGithub is the :github-flow variant of launchEditorForPurpose.
@@ -3162,8 +3275,32 @@ func (m AppModel) cmdPlanMove(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) cmdDelete(args []string) (tea.Model, tea.Cmd) {
+	if m.view == viewBoard {
+		issue := m.board.SelectedIssue()
+		if issue == nil {
+			m.statusMsg = "Move the cursor onto a board row before :del."
+			return m, nil
+		}
+		if !issue.IsUpstash() {
+			m.statusMsg = "GitHub issues can't be deleted from tack — close them on GitHub instead."
+			return m, nil
+		}
+		removed := strings.TrimSpace(issue.Title)
+		m.removeUpstashTask(issue.ID)
+		if m.planStore != nil {
+			_ = m.planStore.SavePlan(m.plan)
+		}
+		m.persons = m.regroup()
+		m.board.SetPersons(m.persons)
+		if removed == "" {
+			m.statusMsg = "Note removed."
+		} else {
+			m.statusMsg = fmt.Sprintf("Removed: %s", removed)
+		}
+		return m, nil
+	}
 	if m.view != viewPlan {
-		m.statusMsg = ":del only works in planning mode"
+		m.statusMsg = ":del only works in planning mode or on a board row"
 		return m, nil
 	}
 

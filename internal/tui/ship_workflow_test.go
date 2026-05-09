@@ -320,6 +320,147 @@ local
 	assertStatus(t, app, "Github canceled")
 }
 
+// --- :edit + :del tests (upstash board rows) ---
+
+func TestEdit_UpstashRow_UpdatesText(t *testing.T) {
+	app := newTestApp()
+	app.config.Me = "alice"
+	app.width = 80
+	app.height = 40
+
+	app.plan.UpstashTasks = []model.UpstashTask{{Id: "ups1", Text: "raw"}}
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{{Issues: app.upstashItems()}},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	tmpFile := t.TempDir() + "/edit.md"
+	if err := os.WriteFile(tmpFile, []byte("polished"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := app.Update(editorFinishedMsg{
+		tmpPath:         tmpFile,
+		purpose:         editorPurposeEditUpstash,
+		upstashID:       "ups1",
+		originalContent: "raw",
+	})
+	app = m.(AppModel)
+
+	if len(app.plan.UpstashTasks) != 1 {
+		t.Fatalf("expected 1 upstash task, got %d", len(app.plan.UpstashTasks))
+	}
+	if app.plan.UpstashTasks[0].Text != "polished" {
+		t.Errorf("upstash text not updated: %q", app.plan.UpstashTasks[0].Text)
+	}
+	assertStatus(t, app, "Note updated")
+}
+
+func TestEdit_UpstashRow_AbortLeavesUnchanged(t *testing.T) {
+	app := newTestApp()
+	app.config.Me = "alice"
+
+	app.plan.UpstashTasks = []model.UpstashTask{{Id: "ups1", Text: "original"}}
+
+	tmpFile := t.TempDir() + "/edit.md"
+	_ = os.WriteFile(tmpFile, []byte(""), 0644)
+	m, _ := app.Update(editorFinishedMsg{
+		tmpPath:         tmpFile,
+		purpose:         editorPurposeEditUpstash,
+		upstashID:       "ups1",
+		originalContent: "original",
+	})
+	app = m.(AppModel)
+
+	if app.plan.UpstashTasks[0].Text != "original" {
+		t.Errorf("text changed on abort: %q", app.plan.UpstashTasks[0].Text)
+	}
+	assertStatus(t, app, "Edit canceled")
+}
+
+func TestEdit_GHRow_RejectedWithHint(t *testing.T) {
+	app := newTestApp()
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{{Issues: []model.ProjectItem{
+				{Number: 100, Title: "real issue", Repo: "test/repo"},
+			}}},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	app = sendCommand(t, app, "edit")
+	if !strings.Contains(app.statusMsg, "GitHub") && !strings.Contains(app.statusMsg, "browser") {
+		t.Errorf("status should hint at GH/browser flow: %q", app.statusMsg)
+	}
+}
+
+func TestDel_UpstashRow_Removes(t *testing.T) {
+	app := newTestApp()
+	app.config.Me = "alice"
+
+	app.plan.UpstashTasks = []model.UpstashTask{
+		{Id: "ups1", Text: "one"},
+		{Id: "ups2", Text: "two"},
+	}
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{{Issues: app.upstashItems()}},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	app = sendCommand(t, app, "del")
+
+	if len(app.plan.UpstashTasks) != 1 {
+		t.Fatalf("expected 1 task remaining, got %d", len(app.plan.UpstashTasks))
+	}
+	if app.plan.UpstashTasks[0].Id != "ups2" {
+		t.Errorf("wrong task survived: %+v", app.plan.UpstashTasks)
+	}
+	if !strings.Contains(app.statusMsg, "Removed") {
+		t.Errorf("status = %q", app.statusMsg)
+	}
+}
+
+func TestDel_GHRow_RejectedWithHint(t *testing.T) {
+	app := newTestApp()
+	app.persons = []model.PersonGroup{
+		{
+			Login: "alice", DisplayName: "Alice",
+			Groups: []model.IssueGroup{{Issues: []model.ProjectItem{
+				{Number: 100, Title: "real issue", Repo: "test/repo"},
+			}}},
+		},
+	}
+	app.board = NewBoardModel(app.persons)
+	app.view = viewBoard
+	for app.board.SelectedIssue() == nil {
+		app.board.CursorDown()
+	}
+
+	app = sendCommand(t, app, "del")
+	if !strings.Contains(app.statusMsg, "GitHub") {
+		t.Errorf("status should hint that GH issues aren't deletable from tack: %q", app.statusMsg)
+	}
+}
+
 // --- :start tests (board → tmux session) ---
 
 func TestStart_FromBoard_CreatesSessionWithSlug(t *testing.T) {

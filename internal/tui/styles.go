@@ -12,6 +12,7 @@ var (
 	colorDanger    = lipgloss.Color("#EF4444") // red
 	colorBg        = lipgloss.Color("#1F2937") // dark bg
 	colorHighlight = lipgloss.Color("#374151") // highlight bg
+	colorUpstash   = lipgloss.Color("#EC4899") // pink — upstash-backed (no GH yet)
 
 	// Tab bar
 	activeTabStyle = lipgloss.NewStyle().
@@ -38,6 +39,9 @@ var (
 			Foreground(colorMuted)
 
 	issueTitleStyle = lipgloss.NewStyle()
+
+	upstashGlyphStyle = lipgloss.NewStyle().Foreground(colorUpstash)
+	upstashTitleStyle = lipgloss.NewStyle().Foreground(colorUpstash)
 
 	// Status badges
 	statusStyles = map[string]lipgloss.Style{

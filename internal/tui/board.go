@@ -327,21 +327,25 @@ func (b *BoardModel) View(width, height int) string {
 			done := isDone(item.issue.Status, item.issue.State)
 			var num string
 			if item.issue.IsUpstash() {
-				// Upstash items have no GitHub number; mark them with a glyph
-				// so the user can tell at a glance what's elevation-ready.
-				num = helpStyle.Render("◇")
+				// Upstash items have no GitHub number; mark them with a pink
+				// ◇ glyph so the user can tell at a glance what's local-only
+				// (elevation-ready) vs a real GitHub issue.
+				num = upstashGlyphStyle.Render("◇")
 			} else {
 				num = issueNumStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
 			}
 			title := truncate(item.issue.Title, width-30)
 			status := renderStatus(item.issue.Status, item.issue.State)
-			if done {
+			switch {
+			case done:
 				doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
 				if !item.issue.IsUpstash() {
 					num = doneStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
 				}
 				title = doneStyle.Render(title)
-			} else {
+			case item.issue.IsUpstash():
+				title = upstashTitleStyle.Render(title)
+			default:
 				title = issueTitleStyle.Render(title)
 			}
 			noteHint := ""

@@ -1675,12 +1675,14 @@ func TestRecapCommand(t *testing.T) {
 	assertStatus(t, app, "Recap saved")
 }
 
-// Test 68: :del outside plan mode
-func TestDeleteOutsidePlanMode(t *testing.T) {
+// Test 68: :del on board view with no row selected hints at the row requirement.
+// (:del on a board upstash row deletes it; on a GH row it errors. With no
+// items, the cursor is empty so the response is a usage hint.)
+func TestDeleteOnBoardEmptyHintsAtRow(t *testing.T) {
 	app := newTestApp()
 	assertView(t, app, viewBoard)
 	app = sendCommand(t, app, "del")
-	assertStatus(t, app, "only works in planning mode")
+	assertStatus(t, app, "board row")
 }
 
 // Test 69: rendering review screen
