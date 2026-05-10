@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/autumnust/tack/internal/cache"
@@ -92,6 +93,22 @@ type AppModel struct {
 	// planDir is the resolved (~-expanded) planning directory path. Used
 	// by :discuss to place per-discussion log files.
 	planDir string
+
+	// divePersist is non-nil during the post-dive save prompt. The TUI
+	// pauses on this while the user confirms or edits the destination
+	// path for a dive's output folder.
+	divePersist *divePersistState
+}
+
+// divePersistState holds the post-exit "where should this dive's output
+// land?" prompt. We default the input to the tack-minted workspace, so
+// pressing Enter without edits keeps the dive where it already is.
+// Esc cancels (no pointer note, folder stays untouched on disk).
+type divePersistState struct {
+	workspace string         // tack-minted dive folder (where claude wrote)
+	files     []string       // filenames produced inside workspace
+	firstLine string         // first line of first seed note, for pointer-note label
+	input     textinput.Model
 }
 
 // Messages
@@ -806,6 +823,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Cancelled"
 				return m, nil
 			}
+		}
+		if m.divePersist != nil {
+			return m.updateDivePersist(msg)
 		}
 
 		// Command bar takes priority when active
@@ -2266,10 +2286,10 @@ func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
 	})
 }
 
-// finalizeDive runs after the embedded claude session exits. It checks
-// the per-dive output folder: if non-empty, a pointer hibana note is
-// created so the dive surfaces in the normal hibana flow; if empty, the
-// folder is removed so we don't accumulate empty cruft.
+// finalizeDive runs after the embedded claude session exits. If claude
+// produced files, the TUI enters a save-destination prompt so the user
+// can confirm the workspace path or move the outcome somewhere else. If
+// the folder is empty, the workspace is removed and we're done.
 func (m AppModel) finalizeDive(msg diveFinishedMsg) (tea.Model, tea.Cmd) {
 	entries, _ := os.ReadDir(msg.outDir)
 	if len(entries) == 0 {
@@ -2278,23 +2298,175 @@ func (m AppModel) finalizeDive(msg diveFinishedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	label := strings.TrimSpace(msg.firstLine)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+
+	input := textinput.New()
+	input.Prompt = ""
+	input.CharLimit = 512
+	input.Width = 80
+	input.SetValue(msg.outDir)
+	input.Focus()
+
+	m.divePersist = &divePersistState{
+		workspace: msg.outDir,
+		files:     names,
+		firstLine: msg.firstLine,
+		input:     input,
+	}
+	m.statusMsg = "" // the prompt View() takes over the status area
+	return m, nil
+}
+
+// updateDivePersist handles keystrokes while the post-dive save prompt
+// is active. Enter commits; esc cancels (folder stays at workspace
+// path, no pointer note created).
+func (m AppModel) updateDivePersist(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		ws := m.divePersist.workspace
+		m.divePersist = nil
+		m.statusMsg = fmt.Sprintf("Dive output left at %s (no hibana note created)", tildeCollapse(ws))
+		return m, nil
+	case tea.KeyEnter:
+		return m.commitDivePersist()
+	}
+	var cmd tea.Cmd
+	m.divePersist.input, cmd = m.divePersist.input.Update(msg)
+	return m, cmd
+}
+
+// commitDivePersist resolves the user's chosen destination and, if
+// different from the workspace, moves the files there. A pointer hibana
+// note is always created on success so the dive surfaces in the daily
+// flow.
+func (m AppModel) commitDivePersist() (tea.Model, tea.Cmd) {
+	state := m.divePersist
+	raw := strings.TrimSpace(state.input.Value())
+	if raw == "" {
+		raw = state.workspace
+	}
+
+	dest, err := expandPath(raw)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Save failed: %s", err)
+		return m, nil
+	}
+
+	if dest != state.workspace {
+		if err := moveDir(state.workspace, dest); err != nil {
+			m.statusMsg = fmt.Sprintf("Move failed: %s", err)
+			return m, nil
+		}
+	}
+
+	label := strings.TrimSpace(state.firstLine)
 	if label == "" {
 		label = "(untitled)"
 	}
-	displayDir := tildeCollapse(msg.outDir)
+	displayDir := tildeCollapse(dest)
 	noteText := fmt.Sprintf("[dive] %s · %s", label, displayDir)
 	if n, err := m.scratchAdd(noteText); err == nil {
 		m.plan.Scratch = append(m.plan.Scratch, n)
 		m.planView.SetData(m.plan, m.project)
 	}
 
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	m.statusMsg = fmt.Sprintf("Dive saved → %s (%s)", displayDir, strings.Join(names, ", "))
+	files := strings.Join(state.files, ", ")
+	m.divePersist = nil
+	m.statusMsg = fmt.Sprintf("Dive saved → %s (%s)", displayDir, files)
 	return m, nil
+}
+
+// expandPath resolves ~, env vars, and relative paths against the
+// current working directory. Returns an absolute path.
+func expandPath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("path required")
+	}
+	if strings.HasPrefix(p, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(home, strings.TrimPrefix(p, "~"))
+	}
+	p = os.ExpandEnv(p)
+	if !filepath.IsAbs(p) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(cwd, p)
+	}
+	return filepath.Clean(p), nil
+}
+
+// moveDir relocates src to dest. If dest exists and is a directory, src
+// is renamed to dest/<basename(src)>; otherwise dest itself becomes the
+// new path. Falls back to a copy+remove when os.Rename can't cross
+// filesystems.
+func moveDir(src, dest string) error {
+	final := dest
+	if info, err := os.Stat(dest); err == nil && info.IsDir() {
+		final = filepath.Join(dest, filepath.Base(src))
+	} else if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(src, final); err == nil {
+		return nil
+	}
+	// Cross-fs fallback: copy then remove.
+	if err := copyDir(src, final); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
+}
+
+func copyDir(src, dest string) error {
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		sp := filepath.Join(src, e.Name())
+		dp := filepath.Join(dest, e.Name())
+		if e.IsDir() {
+			if err := copyDir(sp, dp); err != nil {
+				return err
+			}
+			continue
+		}
+		data, err := os.ReadFile(sp)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dp, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// divePersistView renders the save-destination prompt as a panel that
+// replaces the normal status line while the prompt is active.
+func (m AppModel) divePersistView() string {
+	if m.divePersist == nil {
+		return ""
+	}
+	files := strings.Join(m.divePersist.files, ", ")
+	header := fmt.Sprintf("Dive produced: %s", files)
+	hint := "Enter = save here · esc = leave at workspace, no note"
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		helpStyle.Render(header),
+		"Save to: "+m.divePersist.input.View(),
+		helpStyle.Render(hint),
+	)
 }
 
 // tildeCollapse replaces the user's home prefix with `~` for compact
@@ -3892,12 +4064,15 @@ func (m AppModel) View() string {
 
 	// Command bar or status
 	var bottom string
-	if m.command.IsActive() {
+	switch {
+	case m.divePersist != nil:
+		bottom = commandBarStyle.Render(m.divePersistView())
+	case m.command.IsActive():
 		bottom = m.command.View()
-	} else if m.view == viewPlan && m.planView.IsSearching() {
+	case m.view == viewPlan && m.planView.IsSearching():
 		searchPrompt := "/" + m.planView.SearchQuery() + "█"
 		bottom = commandBarStyle.Render(searchPrompt)
-	} else {
+	default:
 		bottom = statusBar
 	}
 

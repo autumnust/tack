@@ -2351,7 +2351,7 @@ func TestBuildDiveSlug_FallsBackToDive(t *testing.T) {
 	}
 }
 
-func TestFinalizeDive_NonEmptyFolderCreatesPointerNote(t *testing.T) {
+func TestFinalizeDive_NonEmptyFolderOpensPersistPrompt(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
@@ -2362,6 +2362,7 @@ func TestFinalizeDive_NonEmptyFolderCreatesPointerNote(t *testing.T) {
 
 	outDir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(outDir, "summary.md"), []byte("notes"), 0o644)
+	_ = os.WriteFile(filepath.Join(outDir, "plan.md"), []byte("steps"), 0o644)
 
 	m, _ := app.finalizeDive(diveFinishedMsg{
 		noteCount: 1,
@@ -2371,18 +2372,17 @@ func TestFinalizeDive_NonEmptyFolderCreatesPointerNote(t *testing.T) {
 	})
 	app = m.(AppModel)
 
-	if got := len(app.plan.Scratch); got != preCount+1 {
-		t.Fatalf("expected pointer note added; pre=%d post=%d", preCount, got)
+	if app.divePersist == nil {
+		t.Fatal("expected divePersist prompt to be active")
 	}
-	last := app.plan.Scratch[len(app.plan.Scratch)-1]
-	if !strings.Contains(last.Text, "[dive] Deployment Agent") {
-		t.Errorf("pointer note missing label: %q", last.Text)
+	if app.divePersist.input.Value() != outDir {
+		t.Errorf("prompt should default to workspace path; got %q", app.divePersist.input.Value())
 	}
-	if !strings.Contains(last.Text, outDir) && !strings.Contains(last.Text, tildeCollapse(outDir)) {
-		t.Errorf("pointer note missing dir: %q", last.Text)
+	if len(app.divePersist.files) != 2 {
+		t.Errorf("expected 2 files captured; got %v", app.divePersist.files)
 	}
-	if !strings.Contains(app.statusMsg, "summary.md") {
-		t.Errorf("status should list produced files; got %q", app.statusMsg)
+	if len(app.plan.Scratch) != preCount {
+		t.Errorf("pointer note must wait for commit; pre=%d now=%d", preCount, len(app.plan.Scratch))
 	}
 }
 
@@ -2406,6 +2406,9 @@ func TestFinalizeDive_EmptyFolderRemovesItAndStays(t *testing.T) {
 	})
 	app = m.(AppModel)
 
+	if app.divePersist != nil {
+		t.Error("empty dive should not open the persist prompt")
+	}
 	if got := len(app.plan.Scratch); got != preCount {
 		t.Errorf("empty-folder dive should not add notes; pre=%d post=%d", preCount, got)
 	}
@@ -2414,6 +2417,111 @@ func TestFinalizeDive_EmptyFolderRemovesItAndStays(t *testing.T) {
 	}
 	if !strings.Contains(app.statusMsg, "nothing saved") {
 		t.Errorf("status should report nothing saved; got %q", app.statusMsg)
+	}
+}
+
+func TestDivePersist_EnterAtDefault_KeepsAndCreatesNote(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	outDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outDir, "summary.md"), []byte("notes"), 0o644)
+	m, _ := app.finalizeDive(diveFinishedMsg{outDir: outDir, firstLine: "Topic"})
+	app = m.(AppModel)
+	if app.divePersist == nil {
+		t.Fatal("prompt should be active")
+	}
+
+	preCount := len(app.plan.Scratch)
+	app = sendKeys(t, app, "enter")
+
+	if app.divePersist != nil {
+		t.Error("prompt should be cleared after commit")
+	}
+	if got := len(app.plan.Scratch); got != preCount+1 {
+		t.Fatalf("expected pointer note; pre=%d post=%d", preCount, got)
+	}
+	last := app.plan.Scratch[len(app.plan.Scratch)-1]
+	if !strings.Contains(last.Text, "[dive] Topic") {
+		t.Errorf("pointer note label wrong: %q", last.Text)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "summary.md")); err != nil {
+		t.Errorf("file should still be at workspace path: %v", err)
+	}
+}
+
+func TestDivePersist_EscLeavesWorkspaceUntouched(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	outDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outDir, "x.md"), []byte("x"), 0o644)
+	m, _ := app.finalizeDive(diveFinishedMsg{outDir: outDir, firstLine: "Topic"})
+	app = m.(AppModel)
+	preCount := len(app.plan.Scratch)
+
+	app = sendKeys(t, app, "esc")
+
+	if app.divePersist != nil {
+		t.Error("esc should clear prompt")
+	}
+	if got := len(app.plan.Scratch); got != preCount {
+		t.Errorf("esc should not create pointer note; pre=%d post=%d", preCount, got)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "x.md")); err != nil {
+		t.Errorf("workspace should be intact after esc: %v", err)
+	}
+}
+
+func TestExpandPath_Forms(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cwd, _ := os.Getwd()
+	cases := []struct {
+		in, want string
+	}{
+		{"~", home},
+		{"~/foo/bar", filepath.Join(home, "foo", "bar")},
+		{"/abs/path", "/abs/path"},
+		{"rel/path", filepath.Join(cwd, "rel/path")},
+	}
+	for _, c := range cases {
+		got, err := expandPath(c.in)
+		if err != nil {
+			t.Errorf("expandPath(%q) err: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("expandPath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestMoveDir_RenamesAndPreservesContents(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	_ = os.MkdirAll(src, 0o755)
+	_ = os.WriteFile(filepath.Join(src, "a.md"), []byte("alpha"), 0o644)
+	_ = os.WriteFile(filepath.Join(src, "b.md"), []byte("bravo"), 0o644)
+
+	dest := filepath.Join(tmp, "dest")
+	if err := moveDir(src, dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("src should be gone after move: %v", err)
+	}
+	for _, f := range []string{"a.md", "b.md"} {
+		if _, err := os.Stat(filepath.Join(dest, f)); err != nil {
+			t.Errorf("dest missing %s: %v", f, err)
+		}
 	}
 }
 
