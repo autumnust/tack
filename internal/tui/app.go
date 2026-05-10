@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -93,23 +92,6 @@ type AppModel struct {
 	// planDir is the resolved (~-expanded) planning directory path. Used
 	// by :discuss to place per-discussion log files.
 	planDir string
-
-	// divePicker is non-nil while :dive is awaiting a working-directory
-	// choice. Digit keys 1-9 pick; esc cancels.
-	divePicker *divePickerState
-}
-
-// divePickerState pauses the TUI on a numbered list of working
-// directories. Once the user picks, we launch claude in that dir with
-// the seed notes as the kickoff message.
-type divePickerState struct {
-	notes   []model.ScratchNote
-	options []diveOption
-}
-
-type diveOption struct {
-	label string // "tack", "kumo-pipelines", "<cwd>"
-	path  string // absolute filesystem path
 }
 
 // Messages
@@ -825,22 +807,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Cancelled"
 				return m, nil
 			}
-		}
-		if m.divePicker != nil {
-			s := msg.String()
-			if s == "esc" {
-				m.divePicker = nil
-				m.statusMsg = "Dive cancelled"
-				return m, nil
-			}
-			if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-				idx := int(s[0]-'1')
-				if idx < len(m.divePicker.options) {
-					return m.launchDive(m.divePicker.notes, m.divePicker.options[idx])
-				}
-			}
-			// Ignore other keys; keep the picker open.
-			return m, nil
 		}
 
 		// Command bar takes priority when active
@@ -1692,7 +1658,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":reflect") + "Seal oldest pending month → Obsidian vault (opens editor)",
 		"  " + key("space") + "(Hibana) Toggle row selection — `:del` / `:discuss` consume it",
 		"  " + key(":discuss") + "(Hibana) Open browser chat seeded with selected note(s)",
-		"  " + key(":dive") + "(Hibana) Drop into native Claude Code session in your terminal, seeded with selected note(s)",
+		"  " + key(":dive [path]") + "(Hibana) Drop into native Claude Code session, seeded with selected note(s). Optional path sets cwd (defaults to launch dir).",
 		"  " + key(":mv <tab>") + "Move item to tab (today/goal/hibana/target)",
 		"  " + key(":mv goal N") + "Move item as sub-item of goal #N",
 		"  " + key(":del") + "Delete selected item(s)",
@@ -2210,17 +2176,18 @@ type diveFinishedMsg struct {
 	err       error
 }
 
-// cmdDive collects the selected (or cursor) Hibana note(s), then prompts
-// the user to choose a working directory before handing control to a
-// native `claude` session via tea.ExecProcess. The seed notes are passed
-// as the positional first user message so the conversation kicks off the
-// moment claude starts (no empty input box).
+// cmdDive collects the selected (or cursor) Hibana note(s) and hands
+// them to a native `claude` session via tea.ExecProcess. Usage:
+//   :dive            → cwd (the dir tack was launched from)
+//   :dive .          → cwd (explicit)
+//   :dive <path>     → that directory; `~` is expanded, relative paths
+//                       resolve against cwd
 //
-// Permissions are skipped (`--dangerously-skip-permissions`) — we trust
-// local tools in the user's own workspace.
+// The seed notes ride in as claude's positional first-user-message so
+// the conversation kicks off the moment claude starts.
+// `--dangerously-skip-permissions` is on — we trust local tools in the
+// user's own workspace.
 func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
-	_ = args
-
 	if m.view != viewPlan || m.planView.section != sectionHibana {
 		m.statusMsg = ":dive only works on the Hibana section"
 		return m, nil
@@ -2246,101 +2213,58 @@ func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	options := buildDiveOptions(m.config.Repos)
-	if len(options) == 0 {
-		m.statusMsg = ":dive could not resolve a working directory (config.repos empty and no cwd)"
+	dir, err := resolveDiveDir(args)
+	if err != nil {
+		m.statusMsg = err.Error()
 		return m, nil
 	}
-	if len(options) == 1 {
-		// Nothing to choose between — go straight to the launch.
-		return m.launchDive(picks, options[0])
-	}
 
-	m.divePicker = &divePickerState{notes: picks, options: options}
-	m.statusMsg = renderDivePickerPrompt(options)
-	return m, nil
-}
-
-// buildDiveOptions assembles the picker list: every entry from
-// config.repos (label = repo basename, path = local clone) followed by
-// `<cwd>` last. Order is config.repos in declared order, then cwd; both
-// guards (missing path, missing cwd) skip silently.
-func buildDiveOptions(repos map[string]string) []diveOption {
-	out := make([]diveOption, 0, len(repos)+1)
-
-	keys := make([]string, 0, len(repos))
-	for k := range repos {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		path := repos[k]
-		if strings.HasPrefix(path, "~") {
-			if home, err := os.UserHomeDir(); err == nil {
-				path = filepath.Join(home, path[1:])
-			}
-		}
-		if path == "" {
-			continue
-		}
-		label := k
-		if i := strings.LastIndexByte(k, '/'); i >= 0 {
-			label = k[i+1:]
-		}
-		out = append(out, diveOption{label: label, path: path})
-	}
-
-	if cwd, err := os.Getwd(); err == nil && cwd != "" {
-		// Skip cwd if it's already in the list (avoids a duplicate
-		// when the user happens to be inside one of their config.repos).
-		dup := false
-		for _, o := range out {
-			if o.path == cwd {
-				dup = true
-				break
-			}
-		}
-		if !dup {
-			out = append(out, diveOption{label: "<cwd>", path: cwd})
-		}
-	}
-	return out
-}
-
-// renderDivePickerPrompt is the status-line render of the picker.
-// Kept simple — one line, all options, digit-keyed.
-func renderDivePickerPrompt(options []diveOption) string {
-	var sb strings.Builder
-	sb.WriteString("Dive in: ")
-	for i, o := range options {
-		if i > 0 {
-			sb.WriteString("  ")
-		}
-		fmt.Fprintf(&sb, "%d) %s", i+1, o.label)
-	}
-	sb.WriteString("  · esc to cancel")
-	return sb.String()
-}
-
-// launchDive is the actual ExecProcess hand-off, factored out so both
-// the picker callback and the single-option fast path share it.
-func (m AppModel) launchDive(notes []model.ScratchNote, opt diveOption) (tea.Model, tea.Cmd) {
-	seed := buildDiveKickoff(notes)
-
+	seed := buildDiveKickoff(picks)
 	c := exec.Command("claude",
 		"--dangerously-skip-permissions",
 		seed,
 	)
-	c.Dir = opt.path
+	c.Dir = dir
 
-	count := len(notes)
-	target := opt.label
-	m.divePicker = nil
+	count := len(picks)
 	m.planView.ClearSelection()
-	m.statusMsg = fmt.Sprintf("Diving into %s with %d note%s…", target, count, pluralS(count))
+	m.statusMsg = fmt.Sprintf("Diving into %s with %d note%s…", dir, count, pluralS(count))
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
 		return diveFinishedMsg{noteCount: count, err: err}
 	})
+}
+
+// resolveDiveDir turns the optional :dive argument into an absolute,
+// validated directory. No arg or "." → cwd. `~` is expanded; relative
+// paths resolve against cwd. The directory must exist.
+func resolveDiveDir(args []string) (string, error) {
+	if len(args) == 0 || args[0] == "." {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf(":dive could not resolve cwd: %s", err)
+		}
+		return cwd, nil
+	}
+
+	raw := strings.Join(args, " ") // tolerate paths with spaces
+	if strings.HasPrefix(raw, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			raw = filepath.Join(home, strings.TrimPrefix(raw, "~"))
+		}
+	}
+	if !filepath.IsAbs(raw) {
+		if cwd, err := os.Getwd(); err == nil {
+			raw = filepath.Join(cwd, raw)
+		}
+	}
+	info, err := os.Stat(raw)
+	if err != nil {
+		return "", fmt.Errorf(":dive %s: %s", raw, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf(":dive %s: not a directory", raw)
+	}
+	return raw, nil
 }
 
 // buildDiveKickoff renders the picked notes into the positional first

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -2306,67 +2305,68 @@ func TestBuildDiveKickoff_LabelsAndOrder(t *testing.T) {
 	}
 }
 
-func TestBuildDiveOptions_OrdersReposBeforeCwd(t *testing.T) {
-	repos := map[string]string{
-		"kumo-ai/pipelines": "/tmp/pipelines",
-		"autumnust/tack":    "/tmp/tack",
+func TestResolveDiveDir_DefaultsToCwd(t *testing.T) {
+	cwd, _ := os.Getwd()
+	dir, err := resolveDiveDir(nil)
+	if err != nil {
+		t.Fatalf("no-arg resolve: %v", err)
 	}
-	options := buildDiveOptions(repos)
-	// Two repos + cwd = 3 (cwd path varies; just check count and ordering).
-	if len(options) < 2 {
-		t.Fatalf("expected at least 2 repo options, got %d", len(options))
-	}
-	if options[0].label != "pipelines" && options[0].label != "tack" {
-		t.Errorf("first option should be a repo basename, got %q", options[0].label)
-	}
-	// config.repos keys are sorted; "autumnust/tack" < "kumo-ai/pipelines"
-	if options[0].label != "tack" {
-		t.Errorf("expected 'tack' first (sorted by full key), got %q", options[0].label)
-	}
-	last := options[len(options)-1]
-	if last.label != "<cwd>" && len(repos) > 0 {
-		// cwd should land last unless it's a duplicate of a repo path.
-		// Allow the test to be lenient if cwd happened to dedupe.
-		t.Logf("note: last option is %q (cwd may have deduped)", last.label)
+	if dir != cwd {
+		t.Errorf("default dir: got %q, want cwd %q", dir, cwd)
 	}
 }
 
-func TestBuildDiveOptions_EmptyReposJustCwd(t *testing.T) {
-	options := buildDiveOptions(nil)
-	if len(options) != 1 || options[0].label != "<cwd>" {
-		t.Errorf("expected single <cwd> option, got %+v", options)
+func TestResolveDiveDir_DotIsCwd(t *testing.T) {
+	cwd, _ := os.Getwd()
+	dir, err := resolveDiveDir([]string{"."})
+	if err != nil {
+		t.Fatalf("dot resolve: %v", err)
+	}
+	if dir != cwd {
+		t.Errorf(`"." dir: got %q, want %q`, dir, cwd)
 	}
 }
 
-func TestDive_OpensPickerWhenMultipleRepos(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not on PATH; skipping picker open test")
+func TestResolveDiveDir_AbsoluteDir(t *testing.T) {
+	tmp := t.TempDir()
+	dir, err := resolveDiveDir([]string{tmp})
+	if err != nil {
+		t.Fatalf("absolute resolve: %v", err)
 	}
-	app := newTestApp()
-	app.width = 80
-	app.height = 40
-	app.config.Repos = map[string]string{
-		"a/one": "/tmp/one",
-		"b/two": "/tmp/two",
+	if dir != tmp {
+		t.Errorf("absolute dir: got %q, want %q", dir, tmp)
 	}
-	app.plan.Scratch = []model.ScratchNote{{Text: "n"}}
-	app.planView = NewPlanViewModel(app.plan, app.project)
-	app.view = viewPlan
-	app.planView.SetSection(sectionHibana)
+}
 
-	app = sendCommand(t, app, "dive")
-	if app.divePicker == nil {
-		t.Fatal("expected divePicker to be active with multiple options")
+func TestResolveDiveDir_TildeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
 	}
-	if !strings.Contains(app.statusMsg, "Dive in:") {
-		t.Errorf("expected picker prompt in status; got %q", app.statusMsg)
+	dir, err := resolveDiveDir([]string{"~"})
+	if err != nil {
+		t.Fatalf("~ resolve: %v", err)
 	}
-	// Esc cancels.
-	app = sendKeys(t, app, "esc")
-	if app.divePicker != nil {
-		t.Error("esc should clear divePicker")
+	if dir != home {
+		t.Errorf("~ dir: got %q, want %q", dir, home)
 	}
-	assertStatus(t, app, "cancelled")
+}
+
+func TestResolveDiveDir_RejectsMissingPath(t *testing.T) {
+	_, err := resolveDiveDir([]string{"/definitely/not/a/path/xyz123"})
+	if err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
+func TestResolveDiveDir_RejectsFileNotDir(t *testing.T) {
+	tmp := t.TempDir()
+	f := tmp + "/file.txt"
+	_ = os.WriteFile(f, []byte("x"), 0o644)
+	_, err := resolveDiveDir([]string{f})
+	if err == nil {
+		t.Error("expected error when path is a file, not a dir")
+	}
 }
 
 func TestDive_OnlyOnHibanaSection(t *testing.T) {
