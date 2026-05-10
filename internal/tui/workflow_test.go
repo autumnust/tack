@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -2351,7 +2352,7 @@ func TestBuildDiveSlug_FallsBackToDive(t *testing.T) {
 	}
 }
 
-func TestFinalizeDive_NonEmptyFolderOpensPersistPrompt(t *testing.T) {
+func TestFinalizeDive_NonEmptyWorkspaceCreatesPointerNote(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
 	app.height = 40
@@ -2363,26 +2364,41 @@ func TestFinalizeDive_NonEmptyFolderOpensPersistPrompt(t *testing.T) {
 	outDir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(outDir, "summary.md"), []byte("notes"), 0o644)
 	_ = os.WriteFile(filepath.Join(outDir, "plan.md"), []byte("steps"), 0o644)
+	// Simulate the hook manifest.
+	_ = os.WriteFile(filepath.Join(outDir, ".tack-dive-result.json"),
+		[]byte(`{"files":"summary.md,plan.md","session_id":"x","reason":"prompt_input_exit"}`), 0o644)
+	hookDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(hookDir, "settings.json"), []byte("{}"), 0o644)
 
 	m, _ := app.finalizeDive(diveFinishedMsg{
 		noteCount: 1,
 		dir:       "/some/cwd",
 		outDir:    outDir,
 		firstLine: "Deployment Agent",
+		hookDir:   hookDir,
 	})
 	app = m.(AppModel)
 
-	if app.divePersist == nil {
-		t.Fatal("expected divePersist prompt to be active")
+	if got := len(app.plan.Scratch); got != preCount+1 {
+		t.Fatalf("expected pointer note; pre=%d post=%d", preCount, got)
 	}
-	if app.divePersist.input.Value() != outDir {
-		t.Errorf("prompt should default to workspace path; got %q", app.divePersist.input.Value())
+	last := app.plan.Scratch[len(app.plan.Scratch)-1]
+	if !strings.Contains(last.Text, "[dive] Deployment Agent") {
+		t.Errorf("pointer note label wrong: %q", last.Text)
 	}
-	if len(app.divePersist.files) != 2 {
-		t.Errorf("expected 2 files captured; got %v", app.divePersist.files)
+	if !strings.Contains(last.Text, outDir) && !strings.Contains(last.Text, tildeCollapse(outDir)) {
+		t.Errorf("pointer note missing dir: %q", last.Text)
 	}
-	if len(app.plan.Scratch) != preCount {
-		t.Errorf("pointer note must wait for commit; pre=%d now=%d", preCount, len(app.plan.Scratch))
+	if !strings.Contains(app.statusMsg, "summary.md") || !strings.Contains(app.statusMsg, "plan.md") {
+		t.Errorf("status should list produced files; got %q", app.statusMsg)
+	}
+	// Hook scaffolding should be cleaned up.
+	if _, err := os.Stat(hookDir); !os.IsNotExist(err) {
+		t.Errorf("hookDir should be removed; stat err=%v", err)
+	}
+	// Manifest should be stripped from workspace.
+	if _, err := os.Stat(filepath.Join(outDir, ".tack-dive-result.json")); !os.IsNotExist(err) {
+		t.Errorf("manifest should be removed from workspace")
 	}
 }
 
@@ -2397,87 +2413,29 @@ func TestFinalizeDive_EmptyFolderRemovesItAndStays(t *testing.T) {
 
 	outDir := t.TempDir() + "/empty-dive"
 	_ = os.MkdirAll(outDir, 0o755)
+	hookDir := t.TempDir() + "/hook-empty"
+	_ = os.MkdirAll(hookDir, 0o755)
 
 	m, _ := app.finalizeDive(diveFinishedMsg{
 		noteCount: 1,
 		dir:       "/some/cwd",
 		outDir:    outDir,
 		firstLine: "ignored",
+		hookDir:   hookDir,
 	})
 	app = m.(AppModel)
 
-	if app.divePersist != nil {
-		t.Error("empty dive should not open the persist prompt")
-	}
 	if got := len(app.plan.Scratch); got != preCount {
 		t.Errorf("empty-folder dive should not add notes; pre=%d post=%d", preCount, got)
 	}
 	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
 		t.Errorf("empty folder should be removed; stat err=%v", err)
 	}
+	if _, err := os.Stat(hookDir); !os.IsNotExist(err) {
+		t.Errorf("hookDir should be removed even on empty dive; stat err=%v", err)
+	}
 	if !strings.Contains(app.statusMsg, "nothing saved") {
 		t.Errorf("status should report nothing saved; got %q", app.statusMsg)
-	}
-}
-
-func TestDivePersist_EnterAtDefault_KeepsAndCreatesNote(t *testing.T) {
-	app := newTestApp()
-	app.width = 80
-	app.height = 40
-	app.planView = NewPlanViewModel(app.plan, app.project)
-	app.view = viewPlan
-	app.planView.SetSection(sectionHibana)
-
-	outDir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(outDir, "summary.md"), []byte("notes"), 0o644)
-	m, _ := app.finalizeDive(diveFinishedMsg{outDir: outDir, firstLine: "Topic"})
-	app = m.(AppModel)
-	if app.divePersist == nil {
-		t.Fatal("prompt should be active")
-	}
-
-	preCount := len(app.plan.Scratch)
-	app = sendKeys(t, app, "enter")
-
-	if app.divePersist != nil {
-		t.Error("prompt should be cleared after commit")
-	}
-	if got := len(app.plan.Scratch); got != preCount+1 {
-		t.Fatalf("expected pointer note; pre=%d post=%d", preCount, got)
-	}
-	last := app.plan.Scratch[len(app.plan.Scratch)-1]
-	if !strings.Contains(last.Text, "[dive] Topic") {
-		t.Errorf("pointer note label wrong: %q", last.Text)
-	}
-	if _, err := os.Stat(filepath.Join(outDir, "summary.md")); err != nil {
-		t.Errorf("file should still be at workspace path: %v", err)
-	}
-}
-
-func TestDivePersist_EscLeavesWorkspaceUntouched(t *testing.T) {
-	app := newTestApp()
-	app.width = 80
-	app.height = 40
-	app.planView = NewPlanViewModel(app.plan, app.project)
-	app.view = viewPlan
-	app.planView.SetSection(sectionHibana)
-
-	outDir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(outDir, "x.md"), []byte("x"), 0o644)
-	m, _ := app.finalizeDive(diveFinishedMsg{outDir: outDir, firstLine: "Topic"})
-	app = m.(AppModel)
-	preCount := len(app.plan.Scratch)
-
-	app = sendKeys(t, app, "esc")
-
-	if app.divePersist != nil {
-		t.Error("esc should clear prompt")
-	}
-	if got := len(app.plan.Scratch); got != preCount {
-		t.Errorf("esc should not create pointer note; pre=%d post=%d", preCount, got)
-	}
-	if _, err := os.Stat(filepath.Join(outDir, "x.md")); err != nil {
-		t.Errorf("workspace should be intact after esc: %v", err)
 	}
 }
 
@@ -2504,90 +2462,33 @@ func TestExpandPath_Forms(t *testing.T) {
 	}
 }
 
-func TestMoveDir_RenamesAndPreservesContents(t *testing.T) {
-	tmp := t.TempDir()
-	src := filepath.Join(tmp, "src")
-	_ = os.MkdirAll(src, 0o755)
-	_ = os.WriteFile(filepath.Join(src, "a.md"), []byte("alpha"), 0o644)
-	_ = os.WriteFile(filepath.Join(src, "b.md"), []byte("bravo"), 0o644)
+// :dive opens the destination prompt rather than launching claude
+// immediately, so we can sanity-check the seed without running anything.
+func TestDive_OpensDestinationPrompt(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not on PATH; :dive preflight requires it")
+	}
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.plan.Scratch = []model.ScratchNote{{Text: "Deployment Agent"}}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
 
-	dest := filepath.Join(tmp, "dest")
-	if err := moveDir(src, dest); err != nil {
-		t.Fatal(err)
+	app = sendCommand(t, app, "dive")
+	if app.diveDest == nil {
+		t.Fatal("expected diveDest prompt to be active")
 	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Errorf("src should be gone after move: %v", err)
+	got := app.diveDest.input.Value()
+	if !strings.Contains(got, "dives/deployment-agent-") {
+		t.Errorf("default destination should encode slug; got %q", got)
 	}
-	for _, f := range []string{"a.md", "b.md"} {
-		if _, err := os.Stat(filepath.Join(dest, f)); err != nil {
-			t.Errorf("dest missing %s: %v", f, err)
-		}
+	if app.diveDest.firstLine != "Deployment Agent" {
+		t.Errorf("firstLine: got %q", app.diveDest.firstLine)
 	}
 }
 
-func TestResolveDiveDir_DefaultsToCwd(t *testing.T) {
-	cwd, _ := os.Getwd()
-	dir, err := resolveDiveDir(nil)
-	if err != nil {
-		t.Fatalf("no-arg resolve: %v", err)
-	}
-	if dir != cwd {
-		t.Errorf("default dir: got %q, want cwd %q", dir, cwd)
-	}
-}
-
-func TestResolveDiveDir_DotIsCwd(t *testing.T) {
-	cwd, _ := os.Getwd()
-	dir, err := resolveDiveDir([]string{"."})
-	if err != nil {
-		t.Fatalf("dot resolve: %v", err)
-	}
-	if dir != cwd {
-		t.Errorf(`"." dir: got %q, want %q`, dir, cwd)
-	}
-}
-
-func TestResolveDiveDir_AbsoluteDir(t *testing.T) {
-	tmp := t.TempDir()
-	dir, err := resolveDiveDir([]string{tmp})
-	if err != nil {
-		t.Fatalf("absolute resolve: %v", err)
-	}
-	if dir != tmp {
-		t.Errorf("absolute dir: got %q, want %q", dir, tmp)
-	}
-}
-
-func TestResolveDiveDir_TildeExpansion(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home dir")
-	}
-	dir, err := resolveDiveDir([]string{"~"})
-	if err != nil {
-		t.Fatalf("~ resolve: %v", err)
-	}
-	if dir != home {
-		t.Errorf("~ dir: got %q, want %q", dir, home)
-	}
-}
-
-func TestResolveDiveDir_RejectsMissingPath(t *testing.T) {
-	_, err := resolveDiveDir([]string{"/definitely/not/a/path/xyz123"})
-	if err == nil {
-		t.Error("expected error for missing path")
-	}
-}
-
-func TestResolveDiveDir_RejectsFileNotDir(t *testing.T) {
-	tmp := t.TempDir()
-	f := tmp + "/file.txt"
-	_ = os.WriteFile(f, []byte("x"), 0o644)
-	_, err := resolveDiveDir([]string{f})
-	if err == nil {
-		t.Error("expected error when path is a file, not a dir")
-	}
-}
 
 func TestDive_OnlyOnHibanaSection(t *testing.T) {
 	app := newTestApp()

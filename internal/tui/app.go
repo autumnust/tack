@@ -94,20 +94,22 @@ type AppModel struct {
 	// by :discuss to place per-discussion log files.
 	planDir string
 
-	// divePersist is non-nil during the post-dive save prompt. The TUI
-	// pauses on this while the user confirms or edits the destination
-	// path for a dive's output folder.
-	divePersist *divePersistState
+	// diveDest is non-nil while :dive is awaiting the user's choice of
+	// destination directory. The user picks before claude launches; once
+	// chosen, that directory IS the workspace claude writes into. No
+	// post-exit move is ever needed.
+	diveDest *diveDestState
 }
 
-// divePersistState holds the post-exit "where should this dive's output
-// land?" prompt. We default the input to the tack-minted workspace, so
-// pressing Enter without edits keeps the dive where it already is.
-// Esc cancels (no pointer note, folder stays untouched on disk).
-type divePersistState struct {
-	workspace string         // tack-minted dive folder (where claude wrote)
-	files     []string       // filenames produced inside workspace
-	firstLine string         // first line of first seed note, for pointer-note label
+// diveDestState holds the pre-launch "where should this dive's output
+// land?" prompt. Pre-filled with a tack-minted default under
+// <planning.dir>/dives/<slug>/. Enter commits and launches claude;
+// esc bails entirely (no dive started).
+type diveDestState struct {
+	notes     []model.ScratchNote
+	cwd       string         // working directory claude will run in
+	firstLine string         // for pointer-note label
+	defaultD  string         // default destination, shown in hint
 	input     textinput.Model
 }
 
@@ -824,8 +826,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if m.divePersist != nil {
-			return m.updateDivePersist(msg)
+		if m.diveDest != nil {
+			return m.updateDiveDest(msg)
 		}
 
 		// Command bar takes priority when active
@@ -2193,20 +2195,20 @@ func pluralS(n int) string {
 type diveFinishedMsg struct {
 	noteCount int
 	dir       string // cwd claude ran in
-	outDir    string // <planning.dir>/dives/<slug>/
+	outDir    string // the workspace path the user chose pre-launch
 	firstLine string // first line of the seed (for pointer-note label)
+	hookDir   string // <planning.dir>/.dive-tmp/<id> — cleaned up post-exit
 	err       error
 }
 
-// cmdDive collects the selected (or cursor) Hibana note(s) and hands
-// them to a native `claude` session via tea.ExecProcess. Usage:
-//   :dive            → cwd (the dir tack was launched from)
-//   :dive .          → cwd (explicit)
-//   :dive <path>     → that directory; `~` is expanded, relative paths
-//                       resolve against cwd
+// cmdDive collects the selected (or cursor) Hibana note(s) and opens a
+// destination prompt. Once the user picks a save path, we launch claude
+// with that path pre-baked as the workspace ($TACK_DIVE_DIR) and a
+// SessionEnd hook that writes a result manifest on exit. No post-exit
+// prompts; the destination is committed upfront. Usage:
+//   :dive            → defaults the prompt to <planning.dir>/dives/<slug>/
+//   :dive <path>     → seeds the prompt with <path> (still editable)
 //
-// The seed notes ride in as claude's positional first-user-message so
-// the conversation kicks off the moment claude starts.
 // `--dangerously-skip-permissions` is on — we trust local tools in the
 // user's own workspace.
 func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
@@ -2235,147 +2237,252 @@ func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	dir, err := resolveDiveDir(args)
+	cwd, err := os.Getwd()
 	if err != nil {
-		m.statusMsg = err.Error()
+		m.statusMsg = fmt.Sprintf(":dive could not resolve cwd: %s", err)
 		return m, nil
 	}
 
-	// Mint a per-dive output folder under <planning.dir>/dives/. The folder
-	// is named after the first note's first line so it's human-skimmable in
-	// a file manager; a short ULID suffix prevents collisions.
+	// Mint the default destination under <planning.dir>/dives/<slug>/.
+	// The user can edit it in the prompt before launch.
 	id := discuss.NewID()
 	slug := buildDiveSlug(picks, id)
 	planDir := m.planDir
 	if planDir == "" {
 		planDir = filepath.Join(os.TempDir(), "tack")
 	}
-	outDir := filepath.Join(planDir, "dives", slug)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		m.statusMsg = fmt.Sprintf(":dive could not create output dir: %s", err)
-		return m, nil
-	}
+	defaultDest := filepath.Join(planDir, "dives", slug)
 
-	seed := buildDiveKickoff(picks, outDir)
-	c := exec.Command("claude",
-		"--dangerously-skip-permissions",
-		seed,
-	)
-	c.Dir = dir
-	c.Env = append(os.Environ(),
-		"TACK_DIVE_DIR="+outDir,
-		"TACK_DIVE_ID="+string(id),
-	)
+	// If the user typed a path arg, pre-fill the prompt with that instead.
+	prefill := defaultDest
+	if len(args) > 0 {
+		if p, err := expandPath(strings.Join(args, " ")); err == nil {
+			prefill = p
+		}
+	}
 
 	firstLine := ""
 	if len(picks) > 0 {
 		firstLine = strings.SplitN(picks[0].Text, "\n", 2)[0]
 	}
 
-	count := len(picks)
-	m.planView.ClearSelection()
-	m.statusMsg = fmt.Sprintf("Diving into %s with %d note%s…", dir, count, pluralS(count))
-	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return diveFinishedMsg{
-			noteCount: count,
-			dir:       dir,
-			outDir:    outDir,
-			firstLine: firstLine,
-			err:       err,
-		}
-	})
-}
-
-// finalizeDive runs after the embedded claude session exits. If claude
-// produced files, the TUI enters a save-destination prompt so the user
-// can confirm the workspace path or move the outcome somewhere else. If
-// the folder is empty, the workspace is removed and we're done.
-func (m AppModel) finalizeDive(msg diveFinishedMsg) (tea.Model, tea.Cmd) {
-	entries, _ := os.ReadDir(msg.outDir)
-	if len(entries) == 0 {
-		_ = os.Remove(msg.outDir) // best-effort cleanup; ignore error
-		m.statusMsg = fmt.Sprintf("Dive ended in %s — nothing saved", msg.dir)
-		return m, nil
-	}
-
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-
 	input := textinput.New()
 	input.Prompt = ""
 	input.CharLimit = 512
 	input.Width = 80
-	input.SetValue(msg.outDir)
+	input.SetValue(prefill)
+	input.CursorEnd()
 	input.Focus()
 
-	m.divePersist = &divePersistState{
-		workspace: msg.outDir,
-		files:     names,
-		firstLine: msg.firstLine,
+	m.diveDest = &diveDestState{
+		notes:     picks,
+		cwd:       cwd,
+		firstLine: firstLine,
+		defaultD:  defaultDest,
 		input:     input,
 	}
-	m.statusMsg = "" // the prompt View() takes over the status area
+	m.statusMsg = ""
 	return m, nil
 }
 
-// updateDivePersist handles keystrokes while the post-dive save prompt
-// is active. Enter commits; esc cancels (folder stays at workspace
-// path, no pointer note created).
-func (m AppModel) updateDivePersist(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// updateDiveDest intercepts key input while the pre-launch destination
+// prompt is active. Enter commits & launches claude; esc bails.
+func (m AppModel) updateDiveDest(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
-		ws := m.divePersist.workspace
-		m.divePersist = nil
-		m.statusMsg = fmt.Sprintf("Dive output left at %s (no hibana note created)", tildeCollapse(ws))
+		m.diveDest = nil
+		m.statusMsg = "Dive cancelled"
 		return m, nil
 	case tea.KeyEnter:
-		return m.commitDivePersist()
+		return m.commitDiveDest()
 	}
 	var cmd tea.Cmd
-	m.divePersist.input, cmd = m.divePersist.input.Update(msg)
+	m.diveDest.input, cmd = m.diveDest.input.Update(msg)
 	return m, cmd
 }
 
-// commitDivePersist resolves the user's chosen destination and, if
-// different from the workspace, moves the files there. A pointer hibana
-// note is always created on success so the dive surfaces in the daily
-// flow.
-func (m AppModel) commitDivePersist() (tea.Model, tea.Cmd) {
-	state := m.divePersist
+// commitDiveDest finalizes the destination, creates the workspace,
+// writes the per-dive SessionEnd hook + settings file, and launches
+// claude with the workspace path baked in as $TACK_DIVE_DIR.
+func (m AppModel) commitDiveDest() (tea.Model, tea.Cmd) {
+	state := m.diveDest
+
 	raw := strings.TrimSpace(state.input.Value())
 	if raw == "" {
-		raw = state.workspace
+		raw = state.defaultD
 	}
-
 	dest, err := expandPath(raw)
 	if err != nil {
-		m.statusMsg = fmt.Sprintf("Save failed: %s", err)
+		m.statusMsg = fmt.Sprintf(":dive bad path: %s", err)
+		return m, nil
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		m.statusMsg = fmt.Sprintf(":dive could not create %s: %s", dest, err)
 		return m, nil
 	}
 
-	if dest != state.workspace {
-		if err := moveDir(state.workspace, dest); err != nil {
-			m.statusMsg = fmt.Sprintf("Move failed: %s", err)
-			return m, nil
-		}
+	id := discuss.NewID()
+	hookDir := filepath.Join(m.planDir, ".dive-tmp", string(id))
+	if m.planDir == "" {
+		hookDir = filepath.Join(os.TempDir(), "tack-dive-tmp", string(id))
+	}
+	if err := os.MkdirAll(hookDir, 0o755); err != nil {
+		m.statusMsg = fmt.Sprintf(":dive could not create hook dir: %s", err)
+		return m, nil
+	}
+	hookScript := filepath.Join(hookDir, "hook.sh")
+	settingsFile := filepath.Join(hookDir, "settings.json")
+	if err := os.WriteFile(hookScript, []byte(diveHookScript), 0o755); err != nil {
+		m.statusMsg = fmt.Sprintf(":dive could not write hook: %s", err)
+		return m, nil
+	}
+	settings := fmt.Sprintf(diveSettingsJSON, hookScript)
+	if err := os.WriteFile(settingsFile, []byte(settings), 0o644); err != nil {
+		m.statusMsg = fmt.Sprintf(":dive could not write settings: %s", err)
+		return m, nil
 	}
 
-	label := strings.TrimSpace(state.firstLine)
+	seed := buildDiveKickoff(state.notes, dest)
+	c := exec.Command("claude",
+		"--settings", settingsFile,
+		"--dangerously-skip-permissions",
+		seed,
+	)
+	c.Dir = state.cwd
+	c.Env = append(os.Environ(),
+		"TACK_DIVE_DIR="+dest,
+		"TACK_DIVE_ID="+string(id),
+	)
+
+	finished := diveFinishedMsg{
+		noteCount: len(state.notes),
+		dir:       state.cwd,
+		outDir:    dest,
+		firstLine: state.firstLine,
+		hookDir:   hookDir,
+	}
+	count := len(state.notes)
+	m.planView.ClearSelection()
+	m.diveDest = nil
+	m.statusMsg = fmt.Sprintf("Diving into %s with %d note%s → %s", state.cwd, count, pluralS(count), tildeCollapse(dest))
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		finished.err = err
+		return finished
+	})
+}
+
+// diveDestView renders the destination prompt.
+func (m AppModel) diveDestView() string {
+	if m.diveDest == nil {
+		return ""
+	}
+	header := fmt.Sprintf("Dive on %d note%s — set output dir, then Enter to launch claude",
+		len(m.diveDest.notes), pluralS(len(m.diveDest.notes)))
+	hint := "Enter = launch · esc = cancel · default created if dir doesn't exist"
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		helpStyle.Render(header),
+		"Save to: "+m.diveDest.input.View(),
+		helpStyle.Render(hint),
+	)
+}
+
+// diveHookScript is the SessionEnd hook that runs when claude exits.
+// It enumerates the workspace, writes a result manifest, and that's it.
+// No interactive prompts (hooks can't — stdin isn't a TTY).
+const diveHookScript = `#!/bin/sh
+# tack :dive SessionEnd hook — non-interactive, just records what's on disk.
+ws="${TACK_DIVE_DIR}"
+[ -z "$ws" ] && exit 0
+
+# List top-level entries in the workspace (excluding the result file itself).
+files=""
+if [ -d "$ws" ]; then
+  for f in "$ws"/*; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f")"
+    case "$name" in
+      .tack-dive-result.json) continue ;;
+    esac
+    if [ -z "$files" ]; then files="$name"; else files="$files,$name"; fi
+  done
+fi
+
+# Drain stdin (claude pipes session JSON in) so we can extract session_id /
+# transcript_path. Tolerant of any shape — we only grep what we need.
+payload="$(cat)"
+session_id="$(printf '%s' "$payload" | sed -n 's/.*"session_id":"\([^"]*\)".*/\1/p')"
+transcript="$(printf '%s' "$payload" | sed -n 's/.*"transcript_path":"\([^"]*\)".*/\1/p')"
+reason="$(printf '%s' "$payload" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')"
+
+mkdir -p "$ws"
+cat > "$ws/.tack-dive-result.json" <<RESULT
+{
+  "files": "$files",
+  "session_id": "$session_id",
+  "transcript_path": "$transcript",
+  "reason": "$reason"
+}
+RESULT
+exit 0
+`
+
+// diveSettingsJSON is the per-dive settings file claude is launched with.
+// The %s is the absolute path of the hook script.
+const diveSettingsJSON = `{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "%s" }
+        ]
+      }
+    ]
+  }
+}
+`
+
+// finalizeDive runs after the embedded claude session exits. The hook
+// has already written the manifest (or didn't fire — we handle both).
+// Tack inspects the workspace, creates a pointer hibana note if files
+// landed, and cleans up the temporary hook infrastructure.
+func (m AppModel) finalizeDive(msg diveFinishedMsg) (tea.Model, tea.Cmd) {
+	defer func() {
+		if msg.hookDir != "" {
+			_ = os.RemoveAll(msg.hookDir)
+		}
+	}()
+
+	entries, _ := os.ReadDir(msg.outDir)
+	// Filter out the manifest itself from the user-visible file list.
+	var files []string
+	for _, e := range entries {
+		if e.Name() == ".tack-dive-result.json" {
+			continue
+		}
+		files = append(files, e.Name())
+	}
+	// Drop the manifest after reading it so the workspace stays clean.
+	_ = os.Remove(filepath.Join(msg.outDir, ".tack-dive-result.json"))
+
+	if len(files) == 0 {
+		_ = os.Remove(msg.outDir) // empty dir cleanup; ignore err if non-empty
+		m.statusMsg = fmt.Sprintf("Dive ended in %s — nothing saved", msg.dir)
+		return m, nil
+	}
+
+	label := strings.TrimSpace(msg.firstLine)
 	if label == "" {
 		label = "(untitled)"
 	}
-	displayDir := tildeCollapse(dest)
+	displayDir := tildeCollapse(msg.outDir)
 	noteText := fmt.Sprintf("[dive] %s · %s", label, displayDir)
 	if n, err := m.scratchAdd(noteText); err == nil {
 		m.plan.Scratch = append(m.plan.Scratch, n)
 		m.planView.SetData(m.plan, m.project)
 	}
-
-	files := strings.Join(state.files, ", ")
-	m.divePersist = nil
-	m.statusMsg = fmt.Sprintf("Dive saved → %s (%s)", displayDir, files)
+	m.statusMsg = fmt.Sprintf("Dive saved → %s (%s)", displayDir, strings.Join(files, ", "))
 	return m, nil
 }
 
@@ -2401,72 +2508,6 @@ func expandPath(p string) (string, error) {
 		p = filepath.Join(cwd, p)
 	}
 	return filepath.Clean(p), nil
-}
-
-// moveDir relocates src to dest. If dest exists and is a directory, src
-// is renamed to dest/<basename(src)>; otherwise dest itself becomes the
-// new path. Falls back to a copy+remove when os.Rename can't cross
-// filesystems.
-func moveDir(src, dest string) error {
-	final := dest
-	if info, err := os.Stat(dest); err == nil && info.IsDir() {
-		final = filepath.Join(dest, filepath.Base(src))
-	} else if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(src, final); err == nil {
-		return nil
-	}
-	// Cross-fs fallback: copy then remove.
-	if err := copyDir(src, final); err != nil {
-		return err
-	}
-	return os.RemoveAll(src)
-}
-
-func copyDir(src, dest string) error {
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		sp := filepath.Join(src, e.Name())
-		dp := filepath.Join(dest, e.Name())
-		if e.IsDir() {
-			if err := copyDir(sp, dp); err != nil {
-				return err
-			}
-			continue
-		}
-		data, err := os.ReadFile(sp)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(dp, data, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// divePersistView renders the save-destination prompt as a panel that
-// replaces the normal status line while the prompt is active.
-func (m AppModel) divePersistView() string {
-	if m.divePersist == nil {
-		return ""
-	}
-	files := strings.Join(m.divePersist.files, ", ")
-	header := fmt.Sprintf("Dive produced: %s", files)
-	hint := "Enter = save here · esc = leave at workspace, no note"
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		helpStyle.Render(header),
-		"Save to: "+m.divePersist.input.View(),
-		helpStyle.Render(hint),
-	)
 }
 
 // tildeCollapse replaces the user's home prefix with `~` for compact
@@ -2531,39 +2572,6 @@ func slugify(s string) string {
 	}
 	out := strings.TrimRight(b.String(), "-")
 	return out
-}
-
-// resolveDiveDir turns the optional :dive argument into an absolute,
-// validated directory. No arg or "." → cwd. `~` is expanded; relative
-// paths resolve against cwd. The directory must exist.
-func resolveDiveDir(args []string) (string, error) {
-	if len(args) == 0 || args[0] == "." {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf(":dive could not resolve cwd: %s", err)
-		}
-		return cwd, nil
-	}
-
-	raw := strings.Join(args, " ") // tolerate paths with spaces
-	if strings.HasPrefix(raw, "~") {
-		if home, err := os.UserHomeDir(); err == nil {
-			raw = filepath.Join(home, strings.TrimPrefix(raw, "~"))
-		}
-	}
-	if !filepath.IsAbs(raw) {
-		if cwd, err := os.Getwd(); err == nil {
-			raw = filepath.Join(cwd, raw)
-		}
-	}
-	info, err := os.Stat(raw)
-	if err != nil {
-		return "", fmt.Errorf(":dive %s: %s", raw, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf(":dive %s: not a directory", raw)
-	}
-	return raw, nil
 }
 
 // buildDiveKickoff renders the picked notes into the positional first
@@ -4065,8 +4073,8 @@ func (m AppModel) View() string {
 	// Command bar or status
 	var bottom string
 	switch {
-	case m.divePersist != nil:
-		bottom = commandBarStyle.Render(m.divePersistView())
+	case m.diveDest != nil:
+		bottom = commandBarStyle.Render(m.diveDestView())
 	case m.command.IsActive():
 		bottom = m.command.View()
 	case m.view == viewPlan && m.planView.IsSearching():
