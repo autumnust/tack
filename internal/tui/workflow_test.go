@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -2282,7 +2283,7 @@ func TestBuildDiveKickoff_LabelsAndOrder(t *testing.T) {
 		{Id: "01HXAAA", Text: "first thing\nwith two lines", CreatedAt: time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)},
 		{Id: "01HXBBB", Text: "second thing", CreatedAt: time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)},
 	}
-	got := buildDiveKickoff(notes)
+	got := buildDiveKickoff(notes, "/tmp/dives/some-slug-01abcd")
 
 	for _, want := range []string{
 		"## Note 1",
@@ -2295,6 +2296,8 @@ func TestBuildDiveKickoff_LabelsAndOrder(t *testing.T) {
 		"2026-05-08",
 		"2026-05-09",
 		"hibana",
+		"/tmp/dives/some-slug-01abcd",
+		"TACK_DIVE_DIR",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dive kickoff missing %q\n--- got ---\n%s", want, got)
@@ -2302,6 +2305,115 @@ func TestBuildDiveKickoff_LabelsAndOrder(t *testing.T) {
 	}
 	if idx1, idx2 := strings.Index(got, "## Note 1"), strings.Index(got, "## Note 2"); idx1 >= idx2 {
 		t.Errorf("Note 1 should precede Note 2 in kickoff; idx1=%d idx2=%d", idx1, idx2)
+	}
+}
+
+func TestSlugify_BasicShapes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Deployment Agent", "deployment-agent"},
+		{"  hello, world!! ", "hello-world"},
+		{"unicode é ñ 中文 plain", "unicode-plain"},
+		{"123 numeric ok", "123-numeric-ok"},
+		{"!!!", ""},
+		{"a/b/c", "a-b-c"},
+	}
+	for _, c := range cases {
+		if got := slugify(c.in); got != c.want {
+			t.Errorf("slugify(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// Length cap.
+	long := strings.Repeat("abcdefghij ", 10) // 110 chars
+	if got := slugify(long); len(got) > 40 {
+		t.Errorf("slugify length cap broken: %q (len %d)", got, len(got))
+	}
+}
+
+func TestBuildDiveSlug_UsesFirstLineAndShortID(t *testing.T) {
+	notes := []model.ScratchNote{
+		{Text: "Deployment Agent\nwith details below"},
+	}
+	got := buildDiveSlug(notes, "01ABCDEFGHJKMNPQRSTVWXYZ12")
+	if !strings.HasPrefix(got, "deployment-agent-") {
+		t.Errorf("expected 'deployment-agent-' prefix, got %q", got)
+	}
+	// Short id is first 8 chars lowercased.
+	if !strings.HasSuffix(got, "-01abcdef") {
+		t.Errorf("expected '-01abcdef' suffix, got %q", got)
+	}
+}
+
+func TestBuildDiveSlug_FallsBackToDive(t *testing.T) {
+	notes := []model.ScratchNote{{Text: "!!!"}}
+	got := buildDiveSlug(notes, "01ABCDEFGHJKMNPQRSTVWXYZ12")
+	if !strings.HasPrefix(got, "dive-") {
+		t.Errorf("expected 'dive-' fallback prefix, got %q", got)
+	}
+}
+
+func TestFinalizeDive_NonEmptyFolderCreatesPointerNote(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+	preCount := len(app.plan.Scratch)
+
+	outDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outDir, "summary.md"), []byte("notes"), 0o644)
+
+	m, _ := app.finalizeDive(diveFinishedMsg{
+		noteCount: 1,
+		dir:       "/some/cwd",
+		outDir:    outDir,
+		firstLine: "Deployment Agent",
+	})
+	app = m.(AppModel)
+
+	if got := len(app.plan.Scratch); got != preCount+1 {
+		t.Fatalf("expected pointer note added; pre=%d post=%d", preCount, got)
+	}
+	last := app.plan.Scratch[len(app.plan.Scratch)-1]
+	if !strings.Contains(last.Text, "[dive] Deployment Agent") {
+		t.Errorf("pointer note missing label: %q", last.Text)
+	}
+	if !strings.Contains(last.Text, outDir) && !strings.Contains(last.Text, tildeCollapse(outDir)) {
+		t.Errorf("pointer note missing dir: %q", last.Text)
+	}
+	if !strings.Contains(app.statusMsg, "summary.md") {
+		t.Errorf("status should list produced files; got %q", app.statusMsg)
+	}
+}
+
+func TestFinalizeDive_EmptyFolderRemovesItAndStays(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+	preCount := len(app.plan.Scratch)
+
+	outDir := t.TempDir() + "/empty-dive"
+	_ = os.MkdirAll(outDir, 0o755)
+
+	m, _ := app.finalizeDive(diveFinishedMsg{
+		noteCount: 1,
+		dir:       "/some/cwd",
+		outDir:    outDir,
+		firstLine: "ignored",
+	})
+	app = m.(AppModel)
+
+	if got := len(app.plan.Scratch); got != preCount {
+		t.Errorf("empty-folder dive should not add notes; pre=%d post=%d", preCount, got)
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Errorf("empty folder should be removed; stat err=%v", err)
+	}
+	if !strings.Contains(app.statusMsg, "nothing saved") {
+		t.Errorf("status should report nothing saved; got %q", app.statusMsg)
 	}
 }
 

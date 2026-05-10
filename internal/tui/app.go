@@ -662,10 +662,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diveFinishedMsg:
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf(":dive in %s ended with error: %s", msg.dir, msg.err)
-		} else {
-			m.statusMsg = fmt.Sprintf("Dive ended in %s (%d note%s)", msg.dir, msg.noteCount, pluralS(msg.noteCount))
+			return m, nil
 		}
-		return m, nil
+		return m.finalizeDive(msg)
 
 	case editorFinishedMsg:
 		defer os.Remove(msg.tmpPath)
@@ -2173,7 +2172,9 @@ func pluralS(n int) string {
 // diveFinishedMsg fires when the user exits the embedded `claude` session.
 type diveFinishedMsg struct {
 	noteCount int
-	dir       string
+	dir       string // cwd claude ran in
+	outDir    string // <planning.dir>/dives/<slug>/
+	firstLine string // first line of the seed (for pointer-note label)
 	err       error
 }
 
@@ -2220,19 +2221,144 @@ func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	seed := buildDiveKickoff(picks)
+	// Mint a per-dive output folder under <planning.dir>/dives/. The folder
+	// is named after the first note's first line so it's human-skimmable in
+	// a file manager; a short ULID suffix prevents collisions.
+	id := discuss.NewID()
+	slug := buildDiveSlug(picks, id)
+	planDir := m.planDir
+	if planDir == "" {
+		planDir = filepath.Join(os.TempDir(), "tack")
+	}
+	outDir := filepath.Join(planDir, "dives", slug)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		m.statusMsg = fmt.Sprintf(":dive could not create output dir: %s", err)
+		return m, nil
+	}
+
+	seed := buildDiveKickoff(picks, outDir)
 	c := exec.Command("claude",
 		"--dangerously-skip-permissions",
 		seed,
 	)
 	c.Dir = dir
+	c.Env = append(os.Environ(),
+		"TACK_DIVE_DIR="+outDir,
+		"TACK_DIVE_ID="+string(id),
+	)
+
+	firstLine := ""
+	if len(picks) > 0 {
+		firstLine = strings.SplitN(picks[0].Text, "\n", 2)[0]
+	}
 
 	count := len(picks)
 	m.planView.ClearSelection()
 	m.statusMsg = fmt.Sprintf("Diving into %s with %d note%s…", dir, count, pluralS(count))
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return diveFinishedMsg{noteCount: count, dir: dir, err: err}
+		return diveFinishedMsg{
+			noteCount: count,
+			dir:       dir,
+			outDir:    outDir,
+			firstLine: firstLine,
+			err:       err,
+		}
 	})
+}
+
+// finalizeDive runs after the embedded claude session exits. It checks
+// the per-dive output folder: if non-empty, a pointer hibana note is
+// created so the dive surfaces in the normal hibana flow; if empty, the
+// folder is removed so we don't accumulate empty cruft.
+func (m AppModel) finalizeDive(msg diveFinishedMsg) (tea.Model, tea.Cmd) {
+	entries, _ := os.ReadDir(msg.outDir)
+	if len(entries) == 0 {
+		_ = os.Remove(msg.outDir) // best-effort cleanup; ignore error
+		m.statusMsg = fmt.Sprintf("Dive ended in %s — nothing saved", msg.dir)
+		return m, nil
+	}
+
+	label := strings.TrimSpace(msg.firstLine)
+	if label == "" {
+		label = "(untitled)"
+	}
+	displayDir := tildeCollapse(msg.outDir)
+	noteText := fmt.Sprintf("[dive] %s · %s", label, displayDir)
+	if n, err := m.scratchAdd(noteText); err == nil {
+		m.plan.Scratch = append(m.plan.Scratch, n)
+		m.planView.SetData(m.plan, m.project)
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	m.statusMsg = fmt.Sprintf("Dive saved → %s (%s)", displayDir, strings.Join(names, ", "))
+	return m, nil
+}
+
+// tildeCollapse replaces the user's home prefix with `~` for compact
+// display in status / hibana notes. Falls back to the absolute path
+// if the home dir can't be resolved.
+func tildeCollapse(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if strings.HasPrefix(p, home) {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
+// buildDiveSlug renders a human-skimmable folder name for the dive
+// output. Takes the first non-empty line of the first picked note,
+// slugifies it, and appends a short id suffix to dodge collisions
+// across same-titled notes.
+func buildDiveSlug(notes []model.ScratchNote, id discuss.ID) string {
+	base := "dive"
+	if len(notes) > 0 {
+		for _, line := range strings.Split(notes[0].Text, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if s := slugify(line); s != "" {
+				base = s
+			}
+			break
+		}
+	}
+	short := strings.ToLower(string(id))
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return base + "-" + short
+}
+
+// slugify lowercases the input and collapses runs of non-alphanumeric
+// characters to single dashes. Caps at 40 chars so folder names stay
+// scannable; trims leading/trailing dashes.
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	prevDash := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+		} else {
+			if !prevDash && b.Len() > 0 {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	out := strings.TrimRight(b.String(), "-")
+	return out
 }
 
 // resolveDiveDir turns the optional :dive argument into an absolute,
@@ -2272,7 +2398,10 @@ func resolveDiveDir(args []string) (string, error) {
 // message claude sees on launch. claude treats the positional arg as
 // the user's first turn and immediately dispatches it to the model, so
 // the conversation starts with the model's response to these notes.
-func buildDiveKickoff(notes []model.ScratchNote) string {
+// The outDir is the tack-managed folder where any worth-keeping output
+// should land — markdown, html, source, diagrams — whatever the
+// conversation produces.
+func buildDiveKickoff(notes []model.ScratchNote, outDir string) string {
 	var sb strings.Builder
 	sb.WriteString("Help me think through these hibana notes (my daily scratch buffer):\n")
 	for i, n := range notes {
@@ -2292,7 +2421,12 @@ func buildDiveKickoff(notes []model.ScratchNote) string {
 		sb.WriteString(strings.TrimRight(n.Text, "\n"))
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\nEngage with the substance. Read code as needed. Be terse and direct.")
+	sb.WriteString("\nEngage with the substance. Read code as needed. Be terse and direct.\n")
+	sb.WriteString("\n---\n")
+	sb.WriteString("Persistence: when we wrap up, if this conversation produced anything worth keeping (decisions, an action plan, a draft, code, diagrams), write it into the folder below. Any format is fine — `summary.md`, `plan.md`, `report.html`, source files, etc. If nothing's worth saving, leave the folder empty and say so.\n\n")
+	sb.WriteString("Output folder: ")
+	sb.WriteString(outDir)
+	sb.WriteString("\n(also available as $TACK_DIVE_DIR)")
 	return sb.String()
 }
 
