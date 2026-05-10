@@ -659,6 +659,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = msg.summary
 		return m, tea.Quit
 
+	case diveFinishedMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf(":dive ended with error: %s", msg.err)
+		} else {
+			m.statusMsg = fmt.Sprintf("Dive ended (%d note%s)", msg.noteCount, pluralS(msg.noteCount))
+		}
+		return m, nil
+
 	case editorFinishedMsg:
 		defer os.Remove(msg.tmpPath)
 		if msg.err != nil {
@@ -1096,6 +1104,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdShip(cmd.Args)
 	case "discuss":
 		return m.cmdDiscuss(cmd.Args)
+	case "dive":
+		return m.cmdDive(cmd.Args)
 	case "github", "gh":
 		return m.cmdGithub(cmd.Args)
 	case "start":
@@ -1648,6 +1658,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":reflect") + "Seal oldest pending month → Obsidian vault (opens editor)",
 		"  " + key("space") + "(Hibana) Toggle row selection — `:del` / `:discuss` consume it",
 		"  " + key(":discuss") + "(Hibana) Open browser chat seeded with selected note(s)",
+		"  " + key(":dive") + "(Hibana) Drop into native Claude Code session in your terminal, seeded with selected note(s)",
 		"  " + key(":mv <tab>") + "Move item to tab (today/goal/hibana/target)",
 		"  " + key(":mv goal N") + "Move item as sub-item of goal #N",
 		"  " + key(":del") + "Delete selected item(s)",
@@ -2157,6 +2168,97 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// diveFinishedMsg fires when the user exits the embedded `claude` session.
+type diveFinishedMsg struct {
+	noteCount int
+	err       error
+}
+
+// cmdDive collects the selected (or cursor) Hibana note(s) and hands them
+// to a native `claude` session via tea.ExecProcess. The TUI suspends
+// while the chat runs (same UX as :hibana → vim). On exit, control
+// returns to tack.
+//
+// Working directory is whatever shell launched tack — the assumption
+// being that the user runs tack from inside the repo they care about.
+// Permissions are skipped (`--dangerously-skip-permissions`); the seeded
+// notes ride in via `--append-system-prompt` so they're part of the
+// model's context, not the user's first turn.
+func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
+	_ = args // future: accept an explicit cwd override
+
+	if m.view != viewPlan || m.planView.section != sectionHibana {
+		m.statusMsg = ":dive only works on the Hibana section"
+		return m, nil
+	}
+
+	var picks []model.ScratchNote
+	if m.planView.HasSelection() {
+		for _, idx := range m.planView.SelectedHibanaIndices() {
+			if idx >= 0 && idx < len(m.plan.Scratch) {
+				picks = append(picks, m.plan.Scratch[idx])
+			}
+		}
+	} else if fi := m.planView.currentFlat(); fi != nil && fi.focusIdx >= 0 && fi.focusIdx < len(m.plan.Scratch) {
+		picks = append(picks, m.plan.Scratch[fi.focusIdx])
+	}
+	if len(picks) == 0 {
+		m.statusMsg = "Nothing to dive — select notes with `space` or place the cursor on one"
+		return m, nil
+	}
+
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		m.statusMsg = ":dive needs `claude` on PATH (install Claude Code CLI)"
+		return m, nil
+	}
+
+	seed := buildDiveSystemPrompt(picks)
+	cwd, _ := os.Getwd()
+
+	c := exec.Command(bin,
+		"--dangerously-skip-permissions",
+		"--append-system-prompt", seed,
+	)
+	if cwd != "" {
+		c.Dir = cwd
+	}
+
+	count := len(picks)
+	m.planView.ClearSelection()
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return diveFinishedMsg{noteCount: count, err: err}
+	})
+}
+
+// buildDiveSystemPrompt renders the picked notes into the system-prompt
+// addendum that gets appended to Claude Code's default system prompt.
+// Kept as a free function so tests can pin the wire shape without
+// running anything.
+func buildDiveSystemPrompt(notes []model.ScratchNote) string {
+	var sb strings.Builder
+	sb.WriteString("The user is sharing the following hibana notes (their daily scratch buffer) to discuss with you:\n")
+	for i, n := range notes {
+		sb.WriteString("\n## Note ")
+		sb.WriteString(strconv.Itoa(i + 1))
+		if !n.CreatedAt.IsZero() {
+			sb.WriteString(" (created ")
+			sb.WriteString(n.CreatedAt.Format("2006-01-02"))
+			sb.WriteString(")")
+		}
+		if n.Id != "" {
+			sb.WriteString(" [id=")
+			sb.WriteString(n.Id)
+			sb.WriteString("]")
+		}
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimRight(n.Text, "\n"))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nEngage with the substance. Read code as needed; the working directory is the repo the user launched tack from. Be terse and direct.")
+	return sb.String()
 }
 
 func (m AppModel) cmdTarget(args []string) (tea.Model, tea.Cmd) {

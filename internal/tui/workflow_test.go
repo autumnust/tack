@@ -2277,6 +2277,61 @@ func TestDiscuss_NeedsAtLeastOneNote(t *testing.T) {
 	assertStatus(t, app, "Nothing to discuss")
 }
 
+func TestBuildDiveSystemPrompt_LabelsAndOrder(t *testing.T) {
+	notes := []model.ScratchNote{
+		{Id: "01HXAAA", Text: "first thing\nwith two lines", CreatedAt: time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)},
+		{Id: "01HXBBB", Text: "second thing", CreatedAt: time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)},
+	}
+	got := buildDiveSystemPrompt(notes)
+
+	for _, want := range []string{
+		"## Note 1",
+		"## Note 2",
+		"first thing",
+		"with two lines",
+		"second thing",
+		"id=01HXAAA",
+		"id=01HXBBB",
+		"2026-05-08",
+		"2026-05-09",
+		"hibana",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dive prompt missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+	// Note 1 should appear before Note 2.
+	if idx1, idx2 := strings.Index(got, "## Note 1"), strings.Index(got, "## Note 2"); idx1 >= idx2 {
+		t.Errorf("Note 1 should precede Note 2 in prompt; idx1=%d idx2=%d", idx1, idx2)
+	}
+}
+
+func TestDive_OnlyOnHibanaSection(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.plan.Today = []model.TodoItem{{Text: "t1"}}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionToday)
+
+	app = sendCommand(t, app, "dive")
+	assertStatus(t, app, "Hibana")
+}
+
+func TestDive_NeedsAtLeastOneNote(t *testing.T) {
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.plan.Scratch = nil
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "dive")
+	assertStatus(t, app, "Nothing to dive")
+}
+
 func TestEscClearsSelection(t *testing.T) {
 	app := newTestApp()
 	app.width = 80
