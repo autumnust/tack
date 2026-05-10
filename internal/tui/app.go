@@ -661,9 +661,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case diveFinishedMsg:
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf(":dive ended with error: %s", msg.err)
+			m.statusMsg = fmt.Sprintf(":dive in %s ended with error: %s", msg.dir, msg.err)
 		} else {
-			m.statusMsg = fmt.Sprintf("Dive ended (%d note%s)", msg.noteCount, pluralS(msg.noteCount))
+			m.statusMsg = fmt.Sprintf("Dive ended in %s (%d note%s)", msg.dir, msg.noteCount, pluralS(msg.noteCount))
 		}
 		return m, nil
 
@@ -2173,6 +2173,7 @@ func pluralS(n int) string {
 // diveFinishedMsg fires when the user exits the embedded `claude` session.
 type diveFinishedMsg struct {
 	noteCount int
+	dir       string
 	err       error
 }
 
@@ -2230,7 +2231,7 @@ func (m AppModel) cmdDive(args []string) (tea.Model, tea.Cmd) {
 	m.planView.ClearSelection()
 	m.statusMsg = fmt.Sprintf("Diving into %s with %d note%s…", dir, count, pluralS(count))
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return diveFinishedMsg{noteCount: count, err: err}
+		return diveFinishedMsg{noteCount: count, dir: dir, err: err}
 	})
 }
 
