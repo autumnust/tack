@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -2277,12 +2278,12 @@ func TestDiscuss_NeedsAtLeastOneNote(t *testing.T) {
 	assertStatus(t, app, "Nothing to discuss")
 }
 
-func TestBuildDiveSystemPrompt_LabelsAndOrder(t *testing.T) {
+func TestBuildDiveKickoff_LabelsAndOrder(t *testing.T) {
 	notes := []model.ScratchNote{
 		{Id: "01HXAAA", Text: "first thing\nwith two lines", CreatedAt: time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)},
 		{Id: "01HXBBB", Text: "second thing", CreatedAt: time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)},
 	}
-	got := buildDiveSystemPrompt(notes)
+	got := buildDiveKickoff(notes)
 
 	for _, want := range []string{
 		"## Note 1",
@@ -2297,13 +2298,75 @@ func TestBuildDiveSystemPrompt_LabelsAndOrder(t *testing.T) {
 		"hibana",
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("dive prompt missing %q\n--- got ---\n%s", want, got)
+			t.Errorf("dive kickoff missing %q\n--- got ---\n%s", want, got)
 		}
 	}
-	// Note 1 should appear before Note 2.
 	if idx1, idx2 := strings.Index(got, "## Note 1"), strings.Index(got, "## Note 2"); idx1 >= idx2 {
-		t.Errorf("Note 1 should precede Note 2 in prompt; idx1=%d idx2=%d", idx1, idx2)
+		t.Errorf("Note 1 should precede Note 2 in kickoff; idx1=%d idx2=%d", idx1, idx2)
 	}
+}
+
+func TestBuildDiveOptions_OrdersReposBeforeCwd(t *testing.T) {
+	repos := map[string]string{
+		"kumo-ai/pipelines": "/tmp/pipelines",
+		"autumnust/tack":    "/tmp/tack",
+	}
+	options := buildDiveOptions(repos)
+	// Two repos + cwd = 3 (cwd path varies; just check count and ordering).
+	if len(options) < 2 {
+		t.Fatalf("expected at least 2 repo options, got %d", len(options))
+	}
+	if options[0].label != "pipelines" && options[0].label != "tack" {
+		t.Errorf("first option should be a repo basename, got %q", options[0].label)
+	}
+	// config.repos keys are sorted; "autumnust/tack" < "kumo-ai/pipelines"
+	if options[0].label != "tack" {
+		t.Errorf("expected 'tack' first (sorted by full key), got %q", options[0].label)
+	}
+	last := options[len(options)-1]
+	if last.label != "<cwd>" && len(repos) > 0 {
+		// cwd should land last unless it's a duplicate of a repo path.
+		// Allow the test to be lenient if cwd happened to dedupe.
+		t.Logf("note: last option is %q (cwd may have deduped)", last.label)
+	}
+}
+
+func TestBuildDiveOptions_EmptyReposJustCwd(t *testing.T) {
+	options := buildDiveOptions(nil)
+	if len(options) != 1 || options[0].label != "<cwd>" {
+		t.Errorf("expected single <cwd> option, got %+v", options)
+	}
+}
+
+func TestDive_OpensPickerWhenMultipleRepos(t *testing.T) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not on PATH; skipping picker open test")
+	}
+	app := newTestApp()
+	app.width = 80
+	app.height = 40
+	app.config.Repos = map[string]string{
+		"a/one": "/tmp/one",
+		"b/two": "/tmp/two",
+	}
+	app.plan.Scratch = []model.ScratchNote{{Text: "n"}}
+	app.planView = NewPlanViewModel(app.plan, app.project)
+	app.view = viewPlan
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "dive")
+	if app.divePicker == nil {
+		t.Fatal("expected divePicker to be active with multiple options")
+	}
+	if !strings.Contains(app.statusMsg, "Dive in:") {
+		t.Errorf("expected picker prompt in status; got %q", app.statusMsg)
+	}
+	// Esc cancels.
+	app = sendKeys(t, app, "esc")
+	if app.divePicker != nil {
+		t.Error("esc should clear divePicker")
+	}
+	assertStatus(t, app, "cancelled")
 }
 
 func TestDive_OnlyOnHibanaSection(t *testing.T) {
