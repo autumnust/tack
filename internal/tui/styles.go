@@ -46,27 +46,28 @@ var (
 	// upstashAgeSchemes shade upstash (hibana-graduated) board rows by how
 	// long they've been sitting without a GH backing. Four buckets:
 	//   0: <1d (fresh)   1: 1-3d   2: 3-7d   3: 7d+ (stale)
-	// Schemes are user-selectable on the board via "C".
+	// Palette is Ethan Schoonover's Solarized — accent ramps only.
+	// Schemes are user-selectable on the board / plan via "C".
 	upstashAgeSchemes = []upstashAgeScheme{
 		{
-			name:    "heat",
-			summary: "calm → alarming (green → red)",
-			levels:  [4]lipgloss.Color{"#10B981", "#F59E0B", "#F97316", "#EF4444"},
+			name:    "solar-cool",
+			summary: "solarized cyan → blue → violet → magenta",
+			levels:  [4]lipgloss.Color{"#2AA198", "#268BD2", "#6C71C4", "#D33682"},
 		},
 		{
-			name:    "ocean",
-			summary: "cool gradient (cyan → violet)",
-			levels:  [4]lipgloss.Color{"#67E8F9", "#38BDF8", "#818CF8", "#C084FC"},
+			name:    "solar-warm",
+			summary: "solarized green → yellow → orange → red",
+			levels:  [4]lipgloss.Color{"#859900", "#B58900", "#CB4B16", "#DC322F"},
 		},
 		{
-			name:    "rose",
-			summary: "pink intensifies (soft → crimson)",
-			levels:  [4]lipgloss.Color{"#FBCFE8", "#F472B6", "#EC4899", "#BE185D"},
+			name:    "solar-violet",
+			summary: "solarized cyan → blue → violet (deepening purple)",
+			levels:  [4]lipgloss.Color{"#2AA198", "#268BD2", "#6C71C4", "#5A60B5"},
 		},
 		{
-			name:    "mono",
-			summary: "grayscale (dim → bright)",
-			levels:  [4]lipgloss.Color{"#4B5563", "#9CA3AF", "#D1D5DB", "#F9FAFB"},
+			name:    "solar-mono",
+			summary: "solarized base tones → accent at stale",
+			levels:  [4]lipgloss.Color{"#93A1A1", "#839496", "#268BD2", "#6C71C4"},
 		},
 	}
 	upstashAgeSchemeIdx = 0
