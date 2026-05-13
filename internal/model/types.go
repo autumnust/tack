@@ -117,7 +117,8 @@ type ProjectItem struct {
 	Repo      string
 	Parent    *ParentRef
 	Comments  []Comment
-	Source    string // "" (GitHub, default) or SourceUpstash
+	Source    string    // "" (GitHub, default) or SourceUpstash
+	CreatedAt time.Time // set for upstash items so the board can shade by age
 }
 
 // IsUpstash reports whether this item is upstash-backed (no GitHub

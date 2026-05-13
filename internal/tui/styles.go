@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	// Colors
@@ -12,7 +16,6 @@ var (
 	colorDanger    = lipgloss.Color("#EF4444") // red
 	colorBg        = lipgloss.Color("#1F2937") // dark bg
 	colorHighlight = lipgloss.Color("#374151") // highlight bg
-	colorUpstash   = lipgloss.Color("#EC4899") // pink — upstash-backed (no GH yet)
 
 	// Tab bar
 	activeTabStyle = lipgloss.NewStyle().
@@ -40,8 +43,33 @@ var (
 
 	issueTitleStyle = lipgloss.NewStyle()
 
-	upstashGlyphStyle = lipgloss.NewStyle().Foreground(colorUpstash)
-	upstashTitleStyle = lipgloss.NewStyle().Foreground(colorUpstash)
+	// upstashAgeSchemes shade upstash (hibana-graduated) board rows by how
+	// long they've been sitting without a GH backing. Four buckets:
+	//   0: <1d (fresh)   1: 1-3d   2: 3-7d   3: 7d+ (stale)
+	// Schemes are user-selectable on the board via "C".
+	upstashAgeSchemes = []upstashAgeScheme{
+		{
+			name:    "heat",
+			summary: "calm → alarming (green → red)",
+			levels:  [4]lipgloss.Color{"#10B981", "#F59E0B", "#F97316", "#EF4444"},
+		},
+		{
+			name:    "ocean",
+			summary: "cool gradient (cyan → violet)",
+			levels:  [4]lipgloss.Color{"#67E8F9", "#38BDF8", "#818CF8", "#C084FC"},
+		},
+		{
+			name:    "rose",
+			summary: "pink intensifies (soft → crimson)",
+			levels:  [4]lipgloss.Color{"#FBCFE8", "#F472B6", "#EC4899", "#BE185D"},
+		},
+		{
+			name:    "mono",
+			summary: "grayscale (dim → bright)",
+			levels:  [4]lipgloss.Color{"#4B5563", "#9CA3AF", "#D1D5DB", "#F9FAFB"},
+		},
+	}
+	upstashAgeSchemeIdx = 0
 
 	// Status badges
 	statusStyles = map[string]lipgloss.Style{
@@ -90,4 +118,46 @@ func statusStyle(status string) lipgloss.Style {
 		return s
 	}
 	return lipgloss.NewStyle().Foreground(colorMuted)
+}
+
+type upstashAgeScheme struct {
+	name    string
+	summary string
+	levels  [4]lipgloss.Color
+}
+
+func upstashAgeBucket(created time.Time) int {
+	if created.IsZero() {
+		return 0
+	}
+	age := time.Since(created)
+	switch {
+	case age < 24*time.Hour:
+		return 0
+	case age < 3*24*time.Hour:
+		return 1
+	case age < 7*24*time.Hour:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func upstashAgeColor(created time.Time) lipgloss.Color {
+	return upstashAgeSchemes[upstashAgeSchemeIdx].levels[upstashAgeBucket(created)]
+}
+
+func upstashAgeStyle(created time.Time) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(upstashAgeColor(created))
+}
+
+// cycleUpstashAgeScheme advances the active color scheme and returns the
+// new scheme so the caller can surface its name to the user.
+func cycleUpstashAgeScheme() upstashAgeScheme {
+	upstashAgeSchemeIdx = (upstashAgeSchemeIdx + 1) % len(upstashAgeSchemes)
+	return upstashAgeSchemes[upstashAgeSchemeIdx]
+}
+
+func currentUpstashAgeScheme() upstashAgeScheme {
+	return upstashAgeSchemes[upstashAgeSchemeIdx]
 }

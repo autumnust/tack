@@ -371,11 +371,12 @@ func (b *BoardModel) View(width, height int) string {
 
 			done := isDone(item.issue.Status, item.issue.State)
 			var num string
+			var upstashStyle lipgloss.Style
 			if item.issue.IsUpstash() {
-				// Upstash items have no GitHub number; mark them with a pink
-				// ◇ glyph so the user can tell at a glance what's local-only
-				// (elevation-ready) vs a real GitHub issue.
-				num = upstashGlyphStyle.Render("◇")
+				// Upstash items have no GitHub number; mark them with a ◇
+				// glyph shaded by age so stale-without-elevation rows pop.
+				upstashStyle = upstashAgeStyle(item.issue.CreatedAt)
+				num = upstashStyle.Render("◇")
 			} else {
 				num = issueNumStyle.Render(fmt.Sprintf("#%d", item.issue.Number))
 			}
@@ -389,7 +390,7 @@ func (b *BoardModel) View(width, height int) string {
 				}
 				title = doneStyle.Render(title)
 			case item.issue.IsUpstash():
-				title = upstashTitleStyle.Render(title)
+				title = upstashStyle.Render(title)
 			default:
 				title = issueTitleStyle.Render(title)
 			}

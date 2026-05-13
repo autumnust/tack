@@ -575,6 +575,7 @@ func (m AppModel) upstashItems() []model.ProjectItem {
 			Status:    status,
 			Assignees: []string{m.config.Me},
 			Source:    model.SourceUpstash,
+			CreatedAt: t.CreatedAt,
 		})
 	}
 	return out
@@ -860,6 +861,9 @@ func (m AppModel) updateBoard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "Hiding done items (x to show)"
 		}
+	case "C":
+		scheme := cycleUpstashAgeScheme()
+		m.statusMsg = fmt.Sprintf("Hibana color scheme: %s — %s (<1d / 1-3d / 3-7d / 7d+)", scheme.name, scheme.summary)
 	case "e":
 		login := m.board.CurrentPerson()
 		if login == "" {

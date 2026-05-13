@@ -235,6 +235,6 @@ func tokenize(s string) []string {
 func commandHelp() string {
 	return fmt.Sprintf("%s  %s",
 		helpStyle.Render(":mv #N <status>"),
-		helpStyle.Render(":c \"comment\" | :open | Tab/j/k/Enter/Esc | n=notes r=refresh q=quit"),
+		helpStyle.Render(":c \"comment\" | :open | Tab/j/k/Enter/Esc | n=notes x=done C=hibana-colors r=refresh q=quit"),
 	)
 }
