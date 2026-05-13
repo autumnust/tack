@@ -916,25 +916,26 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 	lineNo := lipgloss.NewStyle().Foreground(colorMuted).Width(3).Align(lipgloss.Right).
 		Render(fmt.Sprintf("%d", idx+1))
 
+	ts := hibanaSortTime(note)
 	age := ""
-	if ts := hibanaSortTime(note); !ts.IsZero() {
+	if !ts.IsZero() {
 		age = commentTimeStyle.Render(fmt.Sprintf(" (%s)", timeAgo(ts)))
 	}
 
 	// prefix: cursor(2) + lineNo(3) + space(1) = 6
 	prefixWidth := 6
 	contentWidth := m.width - prefixWidth
-	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	headStyle := upstashAgeStyle(ts)
 
-	// Collapsed: first line only, muted
+	// Collapsed: first line only, age-shaded so stale notes pop
 	if !m.hibanaExpanded {
 		firstLine := strings.SplitN(note.Text, "\n", 2)[0]
 		suffixWidth := lipgloss.Width(age)
 		firstWrapped := splitWrap(firstLine, contentWidth-suffixWidth, contentWidth)
-		return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, mutedStyle.Render(firstWrapped[0]), age)
+		return fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, headStyle.Render(firstWrapped[0]), age)
 	}
 
-	// Expanded: full content
+	// Expanded: full content; first line age-shaded, continuation muted
 	pad := strings.Repeat(" ", prefixWidth)
 	contStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 
@@ -944,7 +945,7 @@ func (m PlanViewModel) renderHibanaItem(cursor string, idx int) string {
 	// First line: wrap (not truncate) to fit with age suffix
 	suffixWidth := lipgloss.Width(age)
 	firstWrapped := splitWrap(noteLines[0], contentWidth-suffixWidth, contentWidth)
-	result := fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, firstWrapped[0], age)
+	result := fmt.Sprintf("%s%s %s%s\n", cursor, lineNo, headStyle.Render(firstWrapped[0]), age)
 	for _, l := range firstWrapped[1:] {
 		result += pad + contStyle.Render(l) + "\n"
 	}

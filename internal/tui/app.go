@@ -1727,6 +1727,9 @@ func (m AppModel) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.planView.CursorDown()
 	case "k", "up":
 		m.planView.CursorUp()
+	case "C":
+		scheme := cycleUpstashAgeScheme()
+		m.statusMsg = fmt.Sprintf("Hibana color scheme: %s — %s (<1d / 1-3d / 3-7d / 7d+)", scheme.name, scheme.summary)
 	case "J":
 		if m.planView.MoveDown() {
 			m.statusMsg = "Moved down"
