@@ -39,3 +39,13 @@ planning:
 # back to ~/work/<basename of repo>.
 # repos:
 #   kumo-ai/kumo: ~/work/kumo
+
+# workspace_dir: root for per-ticket scratch folders. :start creates
+# <workspace_dir>/<session-name>/ (GH row → <num>-<slug>, upstash row →
+# <slug>) and seeds PLAN.md + PROGRESS.md. Defaults to ~/.tack/workspace.
+# workspace_dir: "~/.tack/workspace"
+
+# ship_host: tmux host used by :start and :ship. Set to an ssh alias
+# ("aws") when running tack on a local laptop, or "local" when tack
+# itself runs on the remote box. Defaults to "aws".
+# ship_host: "aws"

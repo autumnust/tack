@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -2576,9 +2577,13 @@ func (m AppModel) cmdGithub(args []string) (tea.Model, tea.Cmd) {
 	if issue.Body != "" {
 		body = strings.TrimSpace(issue.Title + "\n\n" + issue.Body)
 	}
+	defHost := m.config.ShipHost
+	if defHost == "" {
+		defHost = "aws"
+	}
 	tpl := ship.RenderTemplate(model.TodoItem{Text: body}, ship.RenderOptions{
 		DefaultRepo: defaultShipRepo(m.config),
-		DefaultHost: "aws",
+		DefaultHost: defHost,
 	})
 	return m.launchEditorForGithub(tpl, issue.ID)
 }
@@ -2643,7 +2648,10 @@ func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	host := "aws"
+	host := m.config.ShipHost
+	if host == "" {
+		host = "aws"
+	}
 	var sessionName, repoPath string
 	var ticket ship.IssueRef
 	if issue.IsUpstash() {
@@ -2674,7 +2682,39 @@ func (m AppModel) cmdStart(args []string) (tea.Model, tea.Cmd) {
 			Session: res,
 		}, host)
 	}
+	wsPath, wsErr := ensureWorkspaceDir(m.config.WorkspaceDir, sessionName)
+	if wsErr != nil {
+		m.statusMsg += fmt.Sprintf(" · workspace mkdir failed: %s", wsErr)
+	} else if wsPath != "" {
+		m.statusMsg += fmt.Sprintf(" · workspace: %s", wsPath)
+	}
 	return m, nil
+}
+
+// ensureWorkspaceDir creates <root>/<name> and seeds PLAN.md and
+// PROGRESS.md if absent. Idempotent: re-running :start on the same row
+// leaves existing files untouched. Returns the absolute path and any
+// error; an empty root yields ("", nil) so callers can no-op.
+func ensureWorkspaceDir(root, name string) (string, error) {
+	if root == "" || name == "" {
+		return "", nil
+	}
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	for _, seed := range []string{"PLAN.md", "PROGRESS.md"} {
+		p := filepath.Join(dir, seed)
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return dir, err
+		}
+		f.Close()
+	}
+	return dir, nil
 }
 
 // sanitizeSlug strips characters that have no business in a tmux session

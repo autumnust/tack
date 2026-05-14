@@ -40,6 +40,16 @@ type Config struct {
 	// the current host. Used by :start to set the working tree of the
 	// new tmux session. Missing entries fall back to ~/work/<basename>.
 	Repos map[string]string `yaml:"repos,omitempty"`
+
+	// WorkspaceDir is the root under which :start creates a per-ticket
+	// scratch folder (PLAN.md, PROGRESS.md, etc). The folder name mirrors
+	// the tmux session name. Defaults to ~/.tack/workspace when empty.
+	WorkspaceDir string `yaml:"workspace_dir,omitempty"`
+
+	// ShipHost names the tmux host used by :start and :ship. SSH alias
+	// when running tack on a local laptop ("aws"), or "local" when tack
+	// itself is running on the remote box. Defaults to "aws" when empty.
+	ShipHost string `yaml:"ship_host,omitempty"`
 }
 
 // TeamLogins returns just the login strings.

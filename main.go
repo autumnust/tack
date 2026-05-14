@@ -523,6 +523,19 @@ func loadConfig(path string) (model.Config, error) {
 	if config.Planning.Obsidian.MonthlySubdir == "" {
 		config.Planning.Obsidian.MonthlySubdir = "monthly"
 	}
+	wsDir := config.WorkspaceDir
+	if wsDir == "" {
+		wsDir = "~/.tack/workspace"
+	}
+	if strings.HasPrefix(wsDir, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			wsDir = filepath.Join(home, wsDir[1:])
+		}
+	}
+	config.WorkspaceDir = wsDir
+	if config.ShipHost == "" {
+		config.ShipHost = "aws"
+	}
 	return config, nil
 }
 
