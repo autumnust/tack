@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -35,6 +36,9 @@ func main() {
 	resolveConflicts := flag.Bool("resolve-conflicts", false, "interactively resolve offline-sync conflicts and exit")
 	migrateHibana := flag.String("migrate-hibana", "", "one-time: import legacy hibana scratch notes from <vault-dir> (containing tack/plan.yaml) into the new ~/.tack/hibana.jsonl log; also recovers from git history when --git-commit is provided")
 	migrateHibanaCommit := flag.String("git-commit", "", "with --migrate-hibana: recover scratch entries from this git commit (e.g. afed1c3 for the Corgi Cafe note)")
+	todayText := flag.String("today", "", "add a daily task and exit (e.g. --today \"review PR #42\")")
+	hibanaJSON := flag.Bool("hibana-json", false, "print hibana notes as JSON and exit")
+	todayJSON := flag.Bool("today-json", false, "print today items as JSON and exit")
 	flag.Parse()
 
 	// Auto-detect config: prefer config.local.yaml (gitignored) over config.yaml
@@ -89,6 +93,18 @@ func main() {
 	}
 	if *hibanaText != "" {
 		addHibana(config, *hibanaText)
+		return
+	}
+	if *todayText != "" {
+		addToday(config, *todayText)
+		return
+	}
+	if *hibanaJSON {
+		listHibanaJSON(config)
+		return
+	}
+	if *todayJSON {
+		listTodayJSON(config)
 		return
 	}
 	if *migrateLeisureVault != "" {
@@ -255,6 +271,103 @@ func addHibana(config model.Config, text string) {
 	rep := hs.Sync(ctx)
 	cancel()
 	fmt.Printf("Hibana: %s  %s\n", text, hibanaStatus(hs, rep))
+}
+
+func addToday(config model.Config, text string) {
+	store, err := openStore(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	plan, err := store.LoadPlan()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading plan: %s\n", err)
+		os.Exit(1)
+	}
+	plan.Today = append(plan.Today, model.TodoItem{
+		Text:      text,
+		CreatedAt: time.Now(),
+	})
+	if err := store.SavePlan(plan); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Today: %s  %s\n", text, redisStatus(store))
+}
+
+// todoJSON is the agent-facing JSON shape for a today item.
+type todoJSON struct {
+	Text      string     `json:"text"`
+	Done      bool       `json:"done"`
+	IssueNum  int        `json:"issue_num,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	DoneAt    *time.Time `json:"done_at,omitempty"`
+}
+
+func listTodayJSON(config model.Config) {
+	store, err := openStore(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	plan, err := store.LoadPlan()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading plan: %s\n", err)
+		os.Exit(1)
+	}
+	items := make([]todoJSON, 0, len(plan.Today))
+	for _, t := range plan.Today {
+		item := todoJSON{
+			Text:      t.Text,
+			Done:      t.Done,
+			IssueNum:  t.IssueNum,
+			CreatedAt: t.CreatedAt,
+		}
+		if !t.DoneAt.IsZero() {
+			item.DoneAt = &t.DoneAt
+		}
+		items = append(items, item)
+	}
+	out, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func listHibanaJSON(config model.Config) {
+	planDir := config.Planning.Dir
+	if planDir == "" {
+		planDir = "~/.tack"
+	}
+	url, token := resolveRedisCreds(config)
+	var backend hibana.Backend = hibana.NopBackend()
+	if url != "" && token != "" {
+		backend = hibana.NewRESTBackend(url, token)
+	}
+	hs, err := hibana.Open(planDir, backend)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if hs.Backend().Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		hs.Sync(ctx)
+		cancel()
+	}
+	notes, err := hs.List()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	hibana.SortByRecency(notes)
+	out, err := json.MarshalIndent(notes, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
 }
 
 // hibanaStatus mirrors redisStatus' compact format so the UX is consistent.
