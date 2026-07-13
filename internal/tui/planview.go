@@ -785,11 +785,21 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 		suffix := status + subCount
 		suffixWidth := lipgloss.Width(suffix)
 		contentWidth := m.width - prefixWidth
-		lines := splitWrap(title, contentWidth-suffixWidth, contentWidth)
 		pad := strings.Repeat(" ", prefixWidth)
-		result := fmt.Sprintf("%s%s %s %s %s%s\n", cursor, lineNo, check, num, textStyle.Render(lines[0]), suffix)
-		for _, l := range lines[1:] {
+		titleLines := strings.Split(title, "\n")
+		firstWrapped := splitWrap(titleLines[0], contentWidth-suffixWidth, contentWidth)
+		result := fmt.Sprintf("%s%s %s %s %s%s\n", cursor, lineNo, check, num, textStyle.Render(firstWrapped[0]), suffix)
+		for _, l := range firstWrapped[1:] {
 			result += pad + textStyle.Render(l) + "\n"
+		}
+		for _, line := range titleLines[1:] {
+			if line == "" {
+				result += "\n"
+				continue
+			}
+			for _, wl := range splitWrap(line, contentWidth, contentWidth) {
+				result += pad + textStyle.Render(wl) + "\n"
+			}
 		}
 		return result
 	}
@@ -808,11 +818,21 @@ func (m PlanViewModel) renderFocusItem(cursor string, idx int) string {
 	prefixWidth := 10
 	suffixWidth := lipgloss.Width(subCount)
 	contentWidth := m.width - prefixWidth
-	lines := splitWrap(item.Text, contentWidth-suffixWidth, contentWidth)
 	pad := strings.Repeat(" ", prefixWidth)
-	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(lines[0]), subCount)
-	for _, l := range lines[1:] {
+	textLines := strings.Split(item.Text, "\n")
+	firstWrapped := splitWrap(textLines[0], contentWidth-suffixWidth, contentWidth)
+	result := fmt.Sprintf("%s%s %s %s%s\n", cursor, lineNo, check, textStyle.Render(firstWrapped[0]), subCount)
+	for _, l := range firstWrapped[1:] {
 		result += pad + textStyle.Render(l) + "\n"
+	}
+	for _, line := range textLines[1:] {
+		if line == "" {
+			result += "\n"
+			continue
+		}
+		for _, wl := range splitWrap(line, contentWidth, contentWidth) {
+			result += pad + textStyle.Render(wl) + "\n"
+		}
 	}
 	return result
 }
