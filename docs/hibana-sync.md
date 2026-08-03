@@ -15,3 +15,5 @@ Every device using the same Hibana remote must run a Tack version that supports 
 - `:diff` is read-only. `:commit` checks the exported base, workspace, remote-aware local state, and the exact local state again while applying the event batch.
 
 Use `:batch` from the Hibana planning section, review with `:diff`, and then choose `:commit` or `:abort`. Closing Cursor has no commit behavior.
+
+For one note, place the Hibana cursor on that note and run `:ide`. Tack opens the note in Cursor and waits. Save the file and close that Cursor tab to return to Tack; Tack then applies the edit through the normal single-note save and synchronization path. The existing `e` key continues to use `VISUAL`, `EDITOR`, or Vim. Set `TACK_IDE` to another command with `--wait` support to replace Cursor for `:ide`.

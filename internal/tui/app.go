@@ -87,6 +87,10 @@ type AppModel struct {
 	// inject fakes here to avoid touching GitHub or remote hosts.
 	shipGH  ship.GHRunner
 	shipSSH ship.SSHRunner
+
+	// ideCommandBuilder opens one prepared note in a graphical editor that
+	// supports --wait. Tests replace it to avoid starting a desktop app.
+	ideCommandBuilder func(string) (*exec.Cmd, error)
 }
 
 // Messages
@@ -1111,6 +1115,8 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdDone(cmd.Args)
 	case "hibana":
 		return m.cmdHibana(cmd.Args)
+	case "ide":
+		return m.cmdIDE(cmd.Args)
 	case "batch":
 		return m.cmdBatch()
 	case "diff":
@@ -1893,6 +1899,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":today \"task\"") + "Add to today (manually curated focus list)",
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
+		"  " + key(":ide") + "Edit selected Hibana note in Cursor; close its tab to return",
 		"  " + key(":batch") + "Create or reopen the Hibana batch workspace in Cursor",
 		"  " + key(":diff") + "Preview batch additions, edits, deletions, and conflicts",
 		"  " + key(":commit") + "Commit the active Hibana batch and attempt remote sync",
@@ -2551,6 +2558,83 @@ func (m AppModel) insertPlanItem() (tea.Model, tea.Cmd) {
 
 func (m AppModel) openEditorForNewHibana() (tea.Model, tea.Cmd) {
 	return m.launchEditor("", sectionHibana, -1, -1)
+}
+
+var ideLookPath = exec.LookPath
+
+func defaultIDECommand(path string) (*exec.Cmd, error) {
+	if configured := strings.TrimSpace(os.Getenv("TACK_IDE")); configured != "" {
+		executable, err := ideLookPath(configured)
+		if err != nil {
+			return nil, fmt.Errorf("configured IDE %q was not found: %w", configured, err)
+		}
+		return exec.Command(executable, "--wait", path), nil
+	}
+
+	if executable, err := ideLookPath("cursor"); err == nil {
+		return exec.Command(executable, "--wait", path), nil
+	}
+	if runtime.GOOS == "darwin" {
+		for _, executable := range []string{
+			"/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+			filepath.Join(os.Getenv("HOME"), "Applications/Cursor.app/Contents/Resources/app/bin/cursor"),
+		} {
+			if info, err := os.Stat(executable); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+				return exec.Command(executable, "--wait", path), nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("Cursor was not found; install its shell command or set TACK_IDE to an IDE command that supports --wait")
+}
+
+func (m AppModel) cmdIDE(args []string) (tea.Model, tea.Cmd) {
+	if len(args) != 0 {
+		m.statusMsg = "Usage: :ide"
+		return m, nil
+	}
+	if m.view != viewPlan || m.planView.section != sectionHibana {
+		m.statusMsg = ":ide is available for the selected note in the Hibana planning section"
+		return m, nil
+	}
+	fi := m.planView.currentFlat()
+	if fi == nil || fi.header || fi.focusIdx < 0 || fi.focusIdx >= len(m.plan.Scratch) {
+		m.statusMsg = "No Hibana note selected"
+		return m, nil
+	}
+
+	idx := fi.focusIdx
+	f, err := os.CreateTemp("", "tack-hibana-ide-*.md")
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error creating IDE file: %s", err)
+		return m, nil
+	}
+	tmpFile := f.Name()
+	if _, err := f.WriteString(m.plan.Scratch[idx].Text); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
+		m.statusMsg = fmt.Sprintf("Error writing IDE file: %s", err)
+		return m, nil
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		m.statusMsg = fmt.Sprintf("Error closing IDE file: %s", err)
+		return m, nil
+	}
+
+	builder := m.ideCommandBuilder
+	if builder == nil {
+		builder = defaultIDECommand
+	}
+	command, err := builder(tmpFile)
+	if err != nil {
+		_ = os.Remove(tmpFile)
+		m.statusMsg = "IDE error: " + err.Error()
+		return m, nil
+	}
+
+	return m, tea.ExecProcess(command, func(err error) tea.Msg {
+		return editorFinishedMsg{tmpPath: tmpFile, section: sectionHibana, idx: idx, subIdx: -1, err: err}
+	})
 }
 
 func (m AppModel) launchEditor(text string, section planSection, idx, subIdx int) (tea.Model, tea.Cmd) {
