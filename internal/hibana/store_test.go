@@ -36,8 +36,7 @@ func TestStoreAddListDelete(t *testing.T) {
 	}
 }
 
-// TestStoreEditPreservesCreatedAtAndChangesID
-func TestStoreEditPreservesCreatedAtAndChangesID(t *testing.T) {
+func TestStoreEditPreservesIDAndCreatedAt(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, NopBackend())
 	n, _ := s.Add("v1")
@@ -53,8 +52,8 @@ func TestStoreEditPreservesCreatedAtAndChangesID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ID == originalID {
-		t.Errorf("edit must yield a fresh id; got same %s", updated.ID)
+	if updated.ID != originalID {
+		t.Errorf("edit changed id: got %s want %s", updated.ID, originalID)
 	}
 	if !updated.CreatedAt.Equal(originalCreated) {
 		t.Errorf("CreatedAt must be preserved: got %v want %v", updated.CreatedAt, originalCreated)

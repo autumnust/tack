@@ -175,15 +175,17 @@ func pushOnce(ctx context.Context, log *Log, pushed *pushedSet, backend Backend,
 func pushEvent(ctx context.Context, backend Backend, ev Event) error {
 	switch ev.Op {
 	case OpAdd:
-		val, err := json.Marshal(noteFromEvent(ev))
+		graves, err := backend.SMembers(ctx, GravesKey)
 		if err != nil {
 			return err
 		}
-		// Defensive: if the NoteID was ever in graves (resurrected via
-		// migration or replay), unset it before we re-add. With our API
-		// this won't occur because edit mints fresh NoteIDs, but the
-		// guard is cheap and catches data-shape regressions.
-		if err := backend.SRem(ctx, GravesKey, string(ev.NoteID)); err != nil {
+		for _, id := range graves {
+			if id == string(ev.NoteID) {
+				return nil
+			}
+		}
+		val, err := json.Marshal(noteFromEvent(ev))
+		if err != nil {
 			return err
 		}
 		return backend.HSet(ctx, HashKey, string(ev.NoteID), string(val))
@@ -199,11 +201,10 @@ func pushEvent(ctx context.Context, backend Backend, ev Event) error {
 // pullOnce inspects remote state and appends synthetic events to the local
 // log for anything we haven't seen yet.
 //
-// Two cases:
-//  1. NoteID is in remote HASH but not in our local-live set and not in
-//     remote graves → that's a remote add we missed → append `add`.
-//  2. NoteID is in remote graves and in our local-live set → that's a
-//     remote delete we missed → append `delete`.
+// Three cases:
+//  1. A remote live NoteID is absent locally, so append an add.
+//  2. A remote live NoteID is newer than our known version, so append an update.
+//  3. A remote grave contains a locally live NoteID, so append a delete.
 //
 // In both cases we mark the synthetic event's EventID as already-pushed so
 // we don't echo it back to Redis next push.
@@ -229,8 +230,8 @@ func pullOnce(ctx context.Context, log *Log, pushed *pushedSet, backend Backend,
 		localLive[n.ID] = n
 	}
 
-	// Case 1: remote-only adds.
-	var missing []string
+	// Cases 1 and 2: remote-only adds and updates to known IDs.
+	var candidates []string
 	for _, k := range hashKeys {
 		if !ValidID(k) {
 			continue
@@ -238,17 +239,14 @@ func pullOnce(ctx context.Context, log *Log, pushed *pushedSet, backend Backend,
 		if _, gone := graveSet[k]; gone {
 			continue
 		}
-		if _, have := localLive[ID(k)]; have {
-			continue
-		}
-		missing = append(missing, k)
+		candidates = append(candidates, k)
 	}
-	if len(missing) > 0 {
-		vals, err := backend.HMGet(ctx, HashKey, missing...)
+	if len(candidates) > 0 {
+		vals, err := backend.HMGet(ctx, HashKey, candidates...)
 		if err != nil {
 			return err
 		}
-		for _, k := range missing {
+		for _, k := range candidates {
 			raw, ok := vals[k]
 			if !ok {
 				continue
@@ -256,6 +254,11 @@ func pullOnce(ctx context.Context, log *Log, pushed *pushedSet, backend Backend,
 			var n Note
 			if err := json.Unmarshal([]byte(raw), &n); err != nil {
 				continue
+			}
+			if local, have := localLive[ID(k)]; have {
+				if local.Text == n.Text {
+					continue
+				}
 			}
 			ev := Event{
 				EventID:   NewID(),
@@ -275,7 +278,7 @@ func pullOnce(ctx context.Context, log *Log, pushed *pushedSet, backend Backend,
 		}
 	}
 
-	// Case 2: remote graves we haven't applied locally.
+	// Case 3: remote graves we haven't applied locally.
 	for g := range graveSet {
 		if !ValidID(g) {
 			continue

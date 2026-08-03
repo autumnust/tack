@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// Op enumerates the on-disk event types. We deliberately keep this set
-// minimal: the user-facing "edit" operation is implemented as delete+add
-// rather than a third op, which keeps the fold logic obviously correct.
+// Op enumerates the on-disk event types. Add introduces a note or updates
+// an existing live note with the same NoteID; delete makes that ID final.
 type Op string
 
 const (
@@ -21,7 +20,7 @@ const (
 // Two ids: EventID identifies *this row* and is what the sync layer keys
 // "already pushed" tracking off — it must be unique across all rows ever
 // written. NoteID identifies the conceptual note the row is about; an
-// add+delete pair share a NoteID but have distinct EventIDs.
+// updates and deletes for one note share a NoteID but have distinct EventIDs.
 type Event struct {
 	EventID   ID        `json:"eid"`
 	NoteID    ID        `json:"nid"`

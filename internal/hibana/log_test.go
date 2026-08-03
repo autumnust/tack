@@ -163,6 +163,89 @@ func TestLogAppendBatchAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestLogAppendBatchPreservesOriginalWhenSiblingFileIsBlocked(t *testing.T) {
+	log, path := newTempLog(t)
+	if err := log.Append(addEv(NewID(), time.Now().UTC(), "existing")); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := path + ".batch.tmp"
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(blocked)
+	if err := log.AppendBatch([]Event{addEv(NewID(), time.Now().UTC(), "new")}); err == nil {
+		t.Fatal("expected blocked sibling file to reject batch")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatal("failed batch changed the original log")
+	}
+}
+
+func TestLogIndependentInstancesSerializeAppendAndBatches(t *testing.T) {
+	logA, path := newTempLog(t)
+	logB, err := NewLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	logA.afterLock = func() {
+		close(locked)
+		<-release
+	}
+	now := time.Now().UTC()
+	errA := make(chan error, 1)
+	go func() {
+		errA <- logA.AppendBatch([]Event{
+			addEv(NewID(), now, "batch-a-1"),
+			addEv(NewID(), now, "batch-a-2"),
+		})
+	}()
+	<-locked
+	errB := make(chan error, 1)
+	go func() {
+		if err := logB.Append(addEv(NewID(), now, "append-b")); err != nil {
+			errB <- err
+			return
+		}
+		errB <- logB.AppendBatch([]Event{
+			addEv(NewID(), now, "batch-b-1"),
+			addEv(NewID(), now, "batch-b-2"),
+		})
+	}()
+	close(release)
+	if err := <-errA; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errB; err != nil {
+		t.Fatal(err)
+	}
+	events, err := logA.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want 5", len(events))
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Text] = true
+	}
+	for _, text := range []string{"batch-a-1", "batch-a-2", "append-b", "batch-b-1", "batch-b-2"} {
+		if !seen[text] {
+			t.Fatalf("lost event %q: %+v", text, events)
+		}
+	}
+}
+
 // TestLogCompactDropsTombstonedEvents: add A, B; delete A; compact. File
 // should now contain just one `add B` event.
 func TestLogCompactDropsTombstonedEvents(t *testing.T) {

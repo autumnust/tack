@@ -136,6 +136,39 @@ func (m *PlanViewModel) UpdateSearchQuery(q string) {
 	m.rebuildFlat()
 }
 
+// HibanaDisplayIndices returns the underlying Scratch indexes in the normal
+// unfiltered order shown by the Hibana tab. The indexes also determine the
+// visible note numbers rendered by the TUI.
+func (m PlanViewModel) HibanaDisplayIndices() []int {
+	regular, research := m.hibanaGroups("")
+	return append(regular, research...)
+}
+
+func (m PlanViewModel) hibanaGroups(query string) (regular, research []int) {
+	query = strings.ToLower(query)
+	for i := range m.plan.Scratch {
+		if query != "" && !strings.Contains(strings.ToLower(m.plan.Scratch[i].Text), query) {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(m.plan.Scratch[i].Text), "[research]") {
+			research = append(research, i)
+		} else {
+			regular = append(regular, i)
+		}
+	}
+	sort.SliceStable(regular, func(i, j int) bool {
+		a := m.plan.Scratch[regular[i]]
+		b := m.plan.Scratch[regular[j]]
+		return hibanaSortTime(a).After(hibanaSortTime(b))
+	})
+	sort.SliceStable(research, func(i, j int) bool {
+		a := m.plan.Scratch[research[i]]
+		b := m.plan.Scratch[research[j]]
+		return hibanaSortTime(a).After(hibanaSortTime(b))
+	})
+	return regular, research
+}
+
 func (m *PlanViewModel) rebuildFlat() {
 	m.flatItems = nil
 	switch m.section {
@@ -157,28 +190,7 @@ func (m *PlanViewModel) rebuildFlat() {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionToday, focusIdx: i, subIdx: -1})
 		}
 	case sectionHibana:
-		var regular, research []int
-		query := strings.ToLower(m.searchQuery)
-		for i := range m.plan.Scratch {
-			if query != "" && !strings.Contains(strings.ToLower(m.plan.Scratch[i].Text), query) {
-				continue
-			}
-			if strings.HasPrefix(strings.ToLower(m.plan.Scratch[i].Text), "[research]") {
-				research = append(research, i)
-			} else {
-				regular = append(regular, i)
-			}
-		}
-		sort.SliceStable(regular, func(i, j int) bool {
-			a := m.plan.Scratch[regular[i]]
-			b := m.plan.Scratch[regular[j]]
-			return hibanaSortTime(a).After(hibanaSortTime(b))
-		})
-		sort.SliceStable(research, func(i, j int) bool {
-			a := m.plan.Scratch[research[i]]
-			b := m.plan.Scratch[research[j]]
-			return hibanaSortTime(a).After(hibanaSortTime(b))
-		})
+		regular, research := m.hibanaGroups(m.searchQuery)
 		for _, i := range regular {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
 		}

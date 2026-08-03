@@ -18,8 +18,10 @@ import (
 // is also held under flock(2) for the duration of any modifying call so a
 // second tack process can't race us on append or compact.
 type Log struct {
-	path string
-	mu   sync.Mutex
+	path      string
+	lockPath  string
+	mu        sync.Mutex
+	afterLock func() // test coordination; nil in production
 }
 
 // NewLog returns a Log rooted at path. The parent directory is created on
@@ -28,7 +30,7 @@ func NewLog(path string) (*Log, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	return &Log{path: path}, nil
+	return &Log{path: path, lockPath: path + ".lock"}, nil
 }
 
 // Path returns the underlying log file path.
@@ -43,29 +45,54 @@ func (l *Log) Append(e Event) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := flockExclusive(f); err != nil {
-		return err
-	}
-	defer flockUnlock(f)
-	if _, err := f.Write(line); err != nil {
-		return err
-	}
-	return f.Sync()
+	return l.withFileLock(true, func() error {
+		f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err := f.Write(line); err != nil {
+			return err
+		}
+		return f.Sync()
+	})
 }
 
-// AppendBatch writes several events under a single flock so a reader either
-// sees all of them or none. Used by the edit path (delete + add).
+// AppendBatch writes several events through a sibling file and one rename so
+// a reader sees either the old log or the old log plus the complete batch.
 func (l *Log) AppendBatch(events []Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.withFileLock(true, func() error {
+		return l.appendBatchLocked(events)
+	})
+}
+
+// AppendBatchChecked holds the stable file lock while the caller examines the
+// current event stream, decides which events are valid, and appends them.
+func (l *Log) AppendBatchChecked(build func(current []Event) ([]Event, error)) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.withFileLock(true, func() error {
+		current, err := readEventsUnlocked(l.path)
+		if err != nil {
+			return err
+		}
+		events, err := build(current)
+		if err != nil {
+			return err
+		}
+		return l.appendBatchLocked(events)
+	})
+}
+
+func (l *Log) appendBatchLocked(events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
 	var buf bytes.Buffer
 	for _, e := range events {
 		line, err := e.MarshalLine()
@@ -74,19 +101,40 @@ func (l *Log) AppendBatch(events []Event) error {
 		}
 		buf.Write(line)
 	}
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	existing, err := os.ReadFile(l.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmp := l.path + ".batch.tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if err := flockExclusive(f); err != nil {
+	removeTmp := func() {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+	}
+	if _, err := f.Write(existing); err != nil {
+		removeTmp()
 		return err
 	}
-	defer flockUnlock(f)
 	if _, err := f.Write(buf.Bytes()); err != nil {
+		removeTmp()
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		removeTmp()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, l.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return syncParentDirectory(l.path)
 }
 
 // Read returns all events currently in the log, in file order. A truncated
@@ -96,10 +144,16 @@ func (l *Log) AppendBatch(events []Event) error {
 func (l *Log) Read() ([]Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return readEvents(l.path)
+	var events []Event
+	err := l.withFileLock(false, func() error {
+		var err error
+		events, err = readEventsUnlocked(l.path)
+		return err
+	})
+	return events, err
 }
 
-func readEvents(path string) ([]Event, error) {
+func readEventsUnlocked(path string) ([]Event, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -108,10 +162,6 @@ func readEvents(path string) ([]Event, error) {
 		return nil, err
 	}
 	defer f.Close()
-	if err := flockShared(f); err != nil {
-		return nil, err
-	}
-	defer flockUnlock(f)
 	var out []Event
 	r := bufio.NewReader(f)
 	lineNum := 0
@@ -160,8 +210,11 @@ func readEvents(path string) ([]Event, error) {
 func (l *Log) Compact() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.withFileLock(true, l.compactLocked)
+}
 
-	events, err := readEvents(l.path)
+func (l *Log) compactLocked() error {
+	events, err := readEventsUnlocked(l.path)
 	if err != nil {
 		return err
 	}
@@ -210,24 +263,6 @@ func (l *Log) Compact() error {
 	if err != nil {
 		return err
 	}
-	// Hold an exclusive lock on the destination during the swap.
-	holder, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := flockExclusive(holder); err != nil {
-		holder.Close()
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	defer func() {
-		flockUnlock(holder)
-		holder.Close()
-	}()
-
 	for _, e := range surviving {
 		line, err := e.ev.MarshalLine()
 		if err != nil {
@@ -250,7 +285,10 @@ func (l *Log) Compact() error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, l.path)
+	if err := os.Rename(tmp, l.path); err != nil {
+		return err
+	}
+	return syncParentDirectory(l.path)
 }
 
 // ShouldCompact returns true if the log has accumulated enough tombstones
@@ -266,6 +304,38 @@ func (l *Log) ShouldCompact() (bool, error) {
 	}
 	live := Fold(events)
 	return len(events) > 2*len(live), nil
+}
+
+func (l *Log) withFileLock(exclusive bool, fn func() error) error {
+	lock, err := os.OpenFile(l.lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if exclusive {
+		err = flockExclusive(lock)
+	} else {
+		err = flockShared(lock)
+	}
+	if err != nil {
+		return err
+	}
+	defer flockUnlock(lock)
+	if l.afterLock != nil {
+		hook := l.afterLock
+		l.afterLock = nil
+		hook()
+	}
+	return fn()
+}
+
+func syncParentDirectory(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // flockExclusive / flockShared / flockUnlock wrap syscall.Flock so the

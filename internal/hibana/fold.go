@@ -17,9 +17,7 @@ type Note struct {
 // Fold reduces an event stream to live notes, in original add order.
 //
 // Semantics keyed on NoteID:
-//   - An `add` event introduces a new note id (or updates a live one — won't
-//     happen with our current API since edit emits delete+add with a fresh
-//     id, but tolerated for forward-compat).
+//   - An `add` event introduces a new note id or updates a live one.
 //   - A `delete` event removes the note id from the live set permanently.
 //     A later `add` of the same NoteID is ignored.
 func Fold(events []Event) []Note {

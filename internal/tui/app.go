@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/autumnust/tack/internal/cache"
 	"github.com/autumnust/tack/internal/github"
 	"github.com/autumnust/tack/internal/grouping"
@@ -21,6 +19,8 @@ import (
 	"github.com/autumnust/tack/internal/model"
 	"github.com/autumnust/tack/internal/planning"
 	"github.com/autumnust/tack/internal/ship"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type viewMode int
@@ -48,11 +48,13 @@ type AppModel struct {
 	ops OpQueue
 
 	// Planning
-	planStore   *planning.Store
-	hibanaStore *hibana.Store
-	vault       *planning.VaultWriter
-	plan        *model.Plan
-	annotations *model.Annotations
+	planStore     *planning.Store
+	hibanaStore   *hibana.Store
+	batchManager  *hibana.BatchManager
+	batchCommitFn func(context.Context) (hibana.BatchCommitReport, error)
+	vault         *planning.VaultWriter
+	plan          *model.Plan
+	annotations   *model.Annotations
 
 	// View state
 	view     viewMode
@@ -68,12 +70,13 @@ type AppModel struct {
 	height int
 
 	// Status
-	loading      bool
-	cacheStale   bool
-	statusMsg    string
-	err          error
-	confirmQuit  bool
+	loading           bool
+	cacheStale        bool
+	statusMsg         string
+	err               error
+	confirmQuit       bool
 	confirmPersonNote bool
+	batchCommitBusy   bool
 
 	// redisTag is a persistent status suffix (e.g. "(redis: on)") rendered
 	// alongside statusMsg so transient messages don't hide the sync state.
@@ -98,6 +101,11 @@ type pushDoneMsg struct {
 	err     error
 }
 
+type batchCommitDoneMsg struct {
+	report hibana.BatchCommitReport
+	err    error
+}
+
 // editorPurpose tags what the editor session is for, so the
 // editorFinishedMsg handler routes the result to the right code path.
 // The default zero value (editorPurposePlanItem) preserves existing
@@ -106,21 +114,21 @@ type pushDoneMsg struct {
 type editorPurpose int
 
 const (
-	editorPurposePlanItem  editorPurpose = iota // default — section/idx/subIdx interpreted
-	editorPurposeShip                           // hibana note → upstash board item (text edit)
-	editorPurposeGithub                         // upstash board item → GH issue (template)
-	editorPurposeEditUpstash                    // edit an existing upstash board item in place
-	editorPurposeReflect                        // monthly target → sealed vault file
+	editorPurposePlanItem    editorPurpose = iota // default — section/idx/subIdx interpreted
+	editorPurposeShip                             // hibana note → upstash board item (text edit)
+	editorPurposeGithub                           // upstash board item → GH issue (template)
+	editorPurposeEditUpstash                      // edit an existing upstash board item in place
+	editorPurposeReflect                          // monthly target → sealed vault file
 )
 
 type editorFinishedMsg struct {
-	tmpPath string      // temp file to read back
-	section planSection // which section was being edited
-	idx     int         // -1 for new item, >=0 for editing existing
-	subIdx  int         // -1 for top-level, >=0 for sub-item (week focus)
+	tmpPath     string      // temp file to read back
+	section     planSection // which section was being edited
+	idx         int         // -1 for new item, >=0 for editing existing
+	subIdx      int         // -1 for top-level, >=0 for sub-item (week focus)
 	personLogin string
-	purpose editorPurpose
-	err     error
+	purpose     editorPurpose
+	err         error
 	// originalContent is what tack pre-filled into the temp file. Used by
 	// :promote and :ship to detect "unsaved quit" — if the file's content
 	// equals this verbatim, vim never wrote, so the operation aborts
@@ -205,6 +213,8 @@ func NewApp(config model.Config, configPath string, client *github.Client, start
 	}
 	if hs, err := hibana.Open(planDir, hibanaBackend); err == nil {
 		app.hibanaStore = hs
+		app.batchManager = hibana.NewBatchManager(hs, nil)
+		app.batchCommitFn = app.batchManager.Commit
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = hs.Sync(ctx) // errors are surfaced in the status line, not blocking
 		cancel()
@@ -646,6 +656,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = msg.summary
 		return m, tea.Quit
 
+	case batchCommitDoneMsg:
+		m.batchCommitBusy = false
+		if msg.report.LocalCommitted {
+			if notes, listErr := m.hibanaStore.List(); listErr == nil {
+				m.plan.Scratch = notesToScratch(notes)
+				m.planView.SetData(m.plan, m.project)
+			}
+		}
+		m.statusMsg = formatBatchCommitStatus(msg.report, msg.err)
+		return m, nil
+
 	case editorFinishedMsg:
 		defer os.Remove(msg.tmpPath)
 		if msg.err != nil {
@@ -804,6 +825,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q":
+			if m.batchCommitBusy {
+				m.statusMsg = "Batch commit is active; wait for completion before quitting"
+				return m, nil
+			}
 			if m.ops.Len() > 0 {
 				return m.initiateQuit()
 			}
@@ -811,6 +836,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Quit? (q/y to confirm, any other key to cancel)"
 			return m, nil
 		case "ctrl+c":
+			if m.batchCommitBusy {
+				m.statusMsg = "Batch commit is active; wait for completion before quitting"
+				return m, nil
+			}
 			return m, tea.Quit
 		case ":":
 			m.command.Activate()
@@ -948,6 +977,10 @@ func (m AppModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.batchCommitBusy && (msg.String() == "y" || msg.String() == "d") {
+		m.statusMsg = "Batch commit is active; wait for completion before quitting"
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.view = viewBoard
@@ -972,6 +1005,10 @@ func (m AppModel) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) initiateQuit() (tea.Model, tea.Cmd) {
+	if m.batchCommitBusy {
+		m.statusMsg = "Batch commit is active; wait for completion before quitting"
+		return m, nil
+	}
 	// Purge completed focus items before saving
 	m.purgeDoneFocusItems()
 
@@ -995,6 +1032,10 @@ func (m AppModel) savePlanningData() {
 }
 
 func (m AppModel) pushCheckedOps() (tea.Model, tea.Cmd) {
+	if m.batchCommitBusy {
+		m.statusMsg = "Batch commit is active; wait for completion before quitting"
+		return m, nil
+	}
 	m.statusMsg = "Pushing changes to GitHub..."
 	return m, func() tea.Msg {
 		summary, err := m.ops.ExecuteChecked(m.project, m.client, m.configPath, &m.config)
@@ -1070,6 +1111,16 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		return m.cmdDone(cmd.Args)
 	case "hibana":
 		return m.cmdHibana(cmd.Args)
+	case "batch":
+		return m.cmdBatch()
+	case "diff":
+		return m.cmdBatchDiff()
+	case "commit":
+		return m.cmdBatchCommit()
+	case "abort":
+		return m.cmdBatchAbort()
+	case "reopen":
+		return m.cmdBatchReopen()
 	case "target":
 		return m.cmdTarget(cmd.Args)
 	case "reflect":
@@ -1127,6 +1178,216 @@ func (m AppModel) executeCommand(cmd *CommandResult) (tea.Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("Unknown command: %s", cmd.Action)
 		return m, nil
 	}
+}
+
+func (m *AppModel) batchCommandsAvailable() bool {
+	if m.view != viewPlan || m.planView.section != sectionHibana {
+		m.statusMsg = "Batch commands are available from the Hibana planning section"
+		return false
+	}
+	if m.batchManager == nil || m.hibanaStore == nil {
+		m.statusMsg = "Hibana batch storage is unavailable"
+		return false
+	}
+	return true
+}
+
+func (m AppModel) cmdBatch() (tea.Model, tea.Cmd) {
+	if !m.batchCommandsAvailable() {
+		return m, nil
+	}
+	displayOrder := make([]hibana.BatchDisplayNote, 0, len(m.plan.Scratch))
+	for _, idx := range m.planView.HibanaDisplayIndices() {
+		if idx < 0 || idx >= len(m.plan.Scratch) || !hibana.ValidID(m.plan.Scratch[idx].Id) {
+			continue
+		}
+		displayOrder = append(displayOrder, hibana.BatchDisplayNote{
+			ID:     hibana.ID(m.plan.Scratch[idx].Id),
+			Number: idx + 1,
+		})
+	}
+	session, reopened, err := m.batchManager.StartWithDisplayOrder(displayOrder)
+	if err != nil {
+		if session.Workspace != "" {
+			m.statusMsg = "Batch workspace prepared, but Cursor could not open: " + err.Error()
+		} else {
+			m.statusMsg = "Batch workspace failed: " + err.Error()
+		}
+		return m, nil
+	}
+	if reopened {
+		m.statusMsg = "Batch workspace reopened in Cursor"
+	} else {
+		m.statusMsg = "Batch workspace created and opened in Cursor"
+	}
+	return m, nil
+}
+
+func (m AppModel) cmdBatchReopen() (tea.Model, tea.Cmd) {
+	if !m.batchCommandsAvailable() {
+		return m, nil
+	}
+	if _, err := m.batchManager.Reopen(); err != nil {
+		m.statusMsg = "Batch reopen failed: " + err.Error()
+		return m, nil
+	}
+	m.statusMsg = "Batch workspace reopened in Cursor"
+	return m, nil
+}
+
+func (m AppModel) cmdBatchDiff() (tea.Model, tea.Cmd) {
+	if !m.batchCommandsAvailable() {
+		return m, nil
+	}
+	plan, err := m.batchManager.Diff()
+	if err != nil {
+		m.statusMsg = "Batch diff failed: " + err.Error()
+		return m, nil
+	}
+	adds, edits, deletes := summarizeBatchChanges(plan.Changes)
+	m.statusMsg = fmt.Sprintf("Batch diff: %d add, %d edit, %d delete, %d conflict", adds, edits, deletes, len(plan.Conflicts))
+	content := renderBatchDiff(plan)
+	item := &model.ProjectItem{Title: "Hibana batch diff", Body: content}
+	m.prevView = m.view
+	m.view = viewDetail
+	m.detail = newDetailPrerendered(item, content, m.width, m.height)
+	return m, nil
+}
+
+func (m AppModel) cmdBatchCommit() (tea.Model, tea.Cmd) {
+	if !m.batchCommandsAvailable() {
+		return m, nil
+	}
+	if m.batchCommitBusy {
+		m.statusMsg = "Batch commit is already in progress"
+		return m, nil
+	}
+	commit := m.batchCommitFn
+	if commit == nil {
+		commit = m.batchManager.Commit
+	}
+	m.batchCommitBusy = true
+	m.statusMsg = "Batch commit in progress..."
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		report, err := commit(ctx)
+		return batchCommitDoneMsg{report: report, err: err}
+	}
+}
+
+func formatBatchCommitStatus(report hibana.BatchCommitReport, commitErr error) string {
+	if commitErr != nil && !report.LocalCommitted {
+		if len(report.Conflicts) > 0 {
+			return fmt.Sprintf("Batch commit refused: %d conflict; run :diff and resolve it in the workspace", len(report.Conflicts))
+		}
+		return "Batch commit refused: " + commitErr.Error()
+	}
+	summary := fmt.Sprintf("%d add, %d edit, %d delete", report.Added, report.Edited, report.Deleted)
+	status := ""
+	switch {
+	case commitErr != nil:
+		status = "Batch committed locally: " + summary
+	case !report.RemoteEnabled:
+		status = "Batch committed locally: " + summary + " (remote sync is off)"
+	case report.SyncErr != nil || report.Pending > 0 || report.PendingErr != nil:
+		status = fmt.Sprintf("Batch committed locally: %s; %d pending sync", summary, report.Pending)
+		if report.SyncErr != nil {
+			status += ": " + report.SyncErr.Error()
+		}
+	default:
+		status = "Batch committed and synced: " + summary
+	}
+	if report.PendingErr != nil {
+		status += "; pending count unavailable: " + report.PendingErr.Error()
+	}
+	if commitErr != nil {
+		status += "; cleanup failed after local commit: " + commitErr.Error()
+	}
+	return status
+}
+
+func (m AppModel) cmdBatchAbort() (tea.Model, tea.Cmd) {
+	if !m.batchCommandsAvailable() {
+		return m, nil
+	}
+	if m.batchCommitBusy {
+		m.statusMsg = "Batch commit is active; wait for completion before aborting"
+		return m, nil
+	}
+	if err := m.batchManager.Abort(); err != nil {
+		m.statusMsg = "Batch abort failed: " + err.Error()
+		return m, nil
+	}
+	m.statusMsg = "Batch workspace aborted; Hibana notes were not changed"
+	return m, nil
+}
+
+func summarizeBatchChanges(changes []hibana.BatchChange) (adds, edits, deletes int) {
+	for _, change := range changes {
+		switch change.Kind {
+		case hibana.BatchAdd:
+			adds++
+		case hibana.BatchEdit:
+			edits++
+		case hibana.BatchDelete:
+			deletes++
+		}
+	}
+	return
+}
+
+func renderBatchDiff(plan hibana.BatchPlan) string {
+	adds, edits, deletes := summarizeBatchChanges(plan.Changes)
+	var lines []string
+	lines = append(lines,
+		"Hibana batch diff",
+		"",
+		fmt.Sprintf("Summary: %d add, %d edit, %d delete, %d conflict", adds, edits, deletes, len(plan.Conflicts)),
+		"",
+	)
+	for _, change := range plan.Changes {
+		identity := string(change.ID)
+		if identity == "" {
+			identity = "new note"
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s  %s", strings.ToUpper(string(change.Kind)), identity, change.Path))
+		switch change.Kind {
+		case hibana.BatchEdit:
+			lines = append(lines, "  before: "+batchTextExcerpt(change.BaseText), "  after:  "+batchTextExcerpt(change.Text))
+		default:
+			lines = append(lines, "  text: "+batchTextExcerpt(change.Text))
+		}
+		lines = append(lines, "")
+	}
+	for _, conflict := range plan.Conflicts {
+		lines = append(lines,
+			fmt.Sprintf("CONFLICT  %s  %s", conflict.ID, conflict.Path),
+			"  reason: "+conflict.Reason,
+			"  exported: "+batchTextExcerpt(conflict.BaseText),
+			"  workspace: "+batchTextExcerpt(conflict.LocalText),
+			"  current: "+batchTextExcerpt(conflict.CurrentText),
+			"",
+		)
+	}
+	if len(plan.Changes) == 0 && len(plan.Conflicts) == 0 {
+		lines = append(lines, "No changes.")
+	}
+	lines = append(lines, "Press Esc to return to Hibana.")
+	return strings.Join(lines, "\n")
+}
+
+func batchTextExcerpt(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return "<deleted or absent>"
+	}
+	const limit = 100
+	runes := []rune(text)
+	if len(runes) > limit {
+		return string(runes[:limit-3]) + "..."
+	}
+	return text
 }
 
 func (m AppModel) cmdMove(args []string) (tea.Model, tea.Cmd) {
@@ -1632,6 +1893,10 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":today \"task\"") + "Add to today (manually curated focus list)",
 		"  " + key(":done / :done N") + "Toggle done",
 		"  " + key(":hibana \"note\"") + "Add note (or :hibana to open editor)",
+		"  " + key(":batch") + "Create or reopen the Hibana batch workspace in Cursor",
+		"  " + key(":diff") + "Preview batch additions, edits, deletions, and conflicts",
+		"  " + key(":commit") + "Commit the active Hibana batch and attempt remote sync",
+		"  " + key(":abort / :reopen") + "Discard the active workspace / open it again",
 		"  " + key(":target \"text\"") + "Add monthly target",
 		"  " + key(":reflect") + "Seal oldest pending month → Obsidian vault (opens editor)",
 		"  " + key(":mv <tab>") + "Move item to tab (today/goal/hibana/target)",
@@ -3614,8 +3879,7 @@ func (m *AppModel) scratchAdd(text string) (model.ScratchNote, error) {
 	}, nil
 }
 
-// scratchEdit replaces a note via the hibana store. The returned
-// ScratchNote has the new Id (edit is implemented as delete+add).
+// scratchEdit replaces a note via the hibana store while retaining its Id.
 func (m *AppModel) scratchEdit(old model.ScratchNote, newText string) (model.ScratchNote, error) {
 	if m.hibanaStore == nil || old.Id == "" {
 		old.Text = newText

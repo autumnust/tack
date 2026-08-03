@@ -79,7 +79,7 @@ func TestSyncDeleteHidesFromRemote(t *testing.T) {
 	}
 }
 
-func TestSyncEditAppearsAsNewIDOnRemote(t *testing.T) {
+func TestSyncEditKeepsIDOnRemote(t *testing.T) {
 	be := newFakeBackend()
 	s, _ := newTestStore(t, be)
 	n, _ := s.Add("v1")
@@ -99,14 +99,121 @@ func TestSyncEditAppearsAsNewIDOnRemote(t *testing.T) {
 	if be.hashLen(HashKey) != 1 {
 		t.Errorf("hash should still have 1 entry after edit; got %d", be.hashLen(HashKey))
 	}
-	if _, ok := be.hashGet(HashKey, string(updated.ID)); !ok {
-		t.Errorf("new id missing from hash")
+	if updated.ID != n.ID {
+		t.Fatalf("edit changed id: got %s want %s", updated.ID, n.ID)
+	}
+	raw, ok := be.hashGet(HashKey, string(n.ID))
+	if !ok {
+		t.Fatalf("stable id missing from hash")
+	}
+	var remote Note
+	if err := json.Unmarshal([]byte(raw), &remote); err != nil {
+		t.Fatal(err)
+	}
+	if remote.Text != "v2" {
+		t.Errorf("remote text = %q, want v2", remote.Text)
+	}
+	if be.graveHas(GravesKey, string(n.ID)) {
+		t.Errorf("edited id must not be marked deleted")
+	}
+}
+
+func TestSyncPullRecognizesRemoteEditWithKnownID(t *testing.T) {
+	be := newFakeBackend()
+	a, _ := newTestStore(t, be)
+	b, _ := newTestStore(t, be)
+
+	n, _ := a.Add("v1")
+	if r := a.Sync(context.Background()); r.Err != nil {
+		t.Fatal(r.Err)
+	}
+	if r := b.Sync(context.Background()); r.Err != nil {
+		t.Fatal(r.Err)
+	}
+	if _, err := a.Edit(n.ID, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if r := a.Sync(context.Background()); r.Err != nil {
+		t.Fatal(r.Err)
+	}
+
+	rep := b.Sync(context.Background())
+	if rep.Err != nil {
+		t.Fatal(rep.Err)
+	}
+	if rep.Pulled != 1 {
+		t.Fatalf("pulled = %d, want 1", rep.Pulled)
+	}
+	notes, _ := b.List()
+	if len(notes) != 1 || notes[0].ID != n.ID || notes[0].Text != "v2" {
+		t.Fatalf("known note was not updated: %+v", notes)
+	}
+}
+
+func TestPullRecognizesRemoteEditWithEqualOrOlderTimestamp(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{name: "equal", offset: 0},
+		{name: "older", offset: -time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			be := newFakeBackend()
+			s, _ := newTestStore(t, be)
+			note, _ := s.Add("local base")
+			if report := s.Sync(context.Background()); report.Err != nil {
+				t.Fatal(report.Err)
+			}
+			base := note.UpdatedAt
+			remote := Note{ID: note.ID, Text: "remote current", CreatedAt: note.CreatedAt, UpdatedAt: base.Add(tc.offset)}
+			data, _ := json.Marshal(remote)
+			be.putHash(HashKey, string(note.ID), string(data))
+
+			report := s.Pull(context.Background())
+			if report.Err != nil || report.Pulled != 1 {
+				t.Fatalf("pull report = %+v", report)
+			}
+			notes, _ := s.List()
+			if len(notes) != 1 || notes[0].Text != "remote current" {
+				t.Fatalf("notes = %+v", notes)
+			}
+			if next := s.Sync(context.Background()); next.Err != nil || next.Pushed != 0 || next.Pulled != 0 {
+				t.Fatalf("next sync echoed pulled text: %+v", next)
+			}
+		})
+	}
+}
+
+func TestSyncRemoteDeleteWinsOverStaleEdit(t *testing.T) {
+	be := newFakeBackend()
+	a, _ := newTestStore(t, be)
+	b, _ := newTestStore(t, be)
+
+	n, _ := a.Add("shared")
+	a.Sync(context.Background())
+	b.Sync(context.Background())
+	if err := a.Delete(n.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.Sync(context.Background())
+	if _, err := b.Edit(n.ID, "stale edit"); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := b.Sync(context.Background())
+	if rep.Err != nil {
+		t.Fatal(rep.Err)
 	}
 	if _, ok := be.hashGet(HashKey, string(n.ID)); ok {
-		t.Errorf("old id should be removed from hash")
+		t.Fatal("stale edit restored a remotely deleted note")
 	}
 	if !be.graveHas(GravesKey, string(n.ID)) {
-		t.Errorf("graves should contain old id")
+		t.Fatal("remote deletion marker was removed")
+	}
+	notes, _ := b.List()
+	if len(notes) != 0 {
+		t.Fatalf("stale device still has deleted note: %+v", notes)
 	}
 }
 

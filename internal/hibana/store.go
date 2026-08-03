@@ -109,10 +109,9 @@ func (s *Store) AddWithTimestamps(text string, createdAt time.Time, updatedAt ti
 	return Note{ID: noteID, Text: text, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
-// Edit replaces a note's text. Implemented as delete-then-add atomically:
-// the new note has a fresh NoteID but inherits the original CreatedAt.
-// The returned Note describes the new id; callers updating UI state
-// should use it (the old id is gone).
+// Edit replaces a note's text while retaining its NoteID and CreatedAt.
+// A later add event for the same live NoteID is folded as an update. A
+// delete remains final, so a stale update cannot restore a deleted note.
 func (s *Store) Edit(id ID, newText string) (Note, error) {
 	events, err := s.log.Read()
 	if err != nil {
@@ -130,15 +129,11 @@ func (s *Store) Edit(id ID, newText string) (Note, error) {
 		return Note{}, fmt.Errorf("hibana: edit: id %s not found", id)
 	}
 	now := nowFunc()
-	newID := NewID()
-	batch := []Event{
-		{EventID: NewID(), NoteID: id, Op: OpDelete, TS: now},
-		{EventID: NewID(), NoteID: newID, Op: OpAdd, TS: now, Text: newText, CreatedAt: existing.CreatedAt},
-	}
-	if err := s.log.AppendBatch(batch); err != nil {
+	ev := Event{EventID: NewID(), NoteID: id, Op: OpAdd, TS: now, Text: newText, CreatedAt: existing.CreatedAt}
+	if err := s.log.Append(ev); err != nil {
 		return Note{}, err
 	}
-	return Note{ID: newID, Text: newText, CreatedAt: existing.CreatedAt, UpdatedAt: now}, nil
+	return Note{ID: id, Text: newText, CreatedAt: existing.CreatedAt, UpdatedAt: now}, nil
 }
 
 // Delete removes a note. Idempotent: deleting a non-existent id appends a
