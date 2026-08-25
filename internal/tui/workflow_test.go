@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -1031,7 +1032,6 @@ func TestElevateToToday(t *testing.T) {
 	assertStatus(t, app, "Elevated")
 }
 
-
 // Test 43: :done toggles today item by cursor
 func TestDoneToggle(t *testing.T) {
 	app := newTestApp()
@@ -2056,6 +2056,53 @@ func TestFetchDataNilClient(t *testing.T) {
 	}
 	if !strings.Contains(done.err.Error(), "not available") {
 		t.Errorf("expected 'not available' in error, got: %s", done.err)
+	}
+}
+
+// A GitHub Project is an optional board data source. A token without the
+// project scopes must not prevent the local planning views from being used.
+func TestFetchFailureWithoutProjectDataIsNonBlocking(t *testing.T) {
+	app := newTestApp()
+	app.project = nil
+	app.persons = nil
+	app.board = NewBoardModel(nil)
+	app.loading = true
+
+	updated, cmd := app.Update(fetchDoneMsg{err: fmt.Errorf("fetch project: GraphQL errors: Your token has not been granted the required scopes")})
+	got := updated.(AppModel)
+
+	if cmd != nil {
+		t.Error("fetch failure should not schedule more work")
+	}
+	if got.loading {
+		t.Error("fetch failure should stop the loading state")
+	}
+	if got.err != nil {
+		t.Errorf("fetch failure should not put the app in a fatal error state: %v", got.err)
+	}
+	if !strings.Contains(got.statusMsg, "Project board unavailable") {
+		t.Errorf("status = %q, want project board unavailable message", got.statusMsg)
+	}
+	if strings.Contains(got.View(), "Press q to quit") {
+		t.Error("project fetch failure should leave the TUI usable")
+	}
+}
+
+func TestFetchDataWithoutProjectSkipsGitHub(t *testing.T) {
+	app := newTestApp()
+	app.config.Project = ""
+	app.client = nil
+
+	msg := app.fetchData()()
+	done, ok := msg.(fetchDoneMsg)
+	if !ok {
+		t.Fatalf("expected fetchDoneMsg, got %T", msg)
+	}
+	if done.err != nil {
+		t.Errorf("empty project should skip GitHub fetch, got error: %v", done.err)
+	}
+	if done.project != nil {
+		t.Errorf("empty project should not load a board, got %#v", done.project)
 	}
 }
 

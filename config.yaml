@@ -1,6 +1,7 @@
 # Tack configuration
-# project: URL of your GitHub Project (org or user)
-project: "https://github.com/orgs/your-org/projects/1"
+# project: optional URL of your GitHub Project (org or user). Omit it when
+# using Tack only for planning and local notes.
+# project: "https://github.com/orgs/your-org/projects/1"
 
 focus:
   - 100

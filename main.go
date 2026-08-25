@@ -121,7 +121,7 @@ func main() {
 	}
 
 	client, err := ghclient.NewClient()
-	if err != nil && !*planMode {
+	if err != nil && !*planMode && config.Project != "" {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
@@ -598,9 +598,6 @@ func loadConfig(path string) (model.Config, error) {
 	var config model.Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return model.Config{}, fmt.Errorf("parse %s: %w", path, err)
-	}
-	if config.Project == "" {
-		return model.Config{}, fmt.Errorf("'project' is required in config")
 	}
 	if config.StatusField == "" {
 		config.StatusField = "Status"

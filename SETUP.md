@@ -50,6 +50,7 @@ For global access from any directory, place config in `~/.tack/`:
 ```bash
 mkdir -p ~/.tack
 cat > ~/.tack/config.local.yaml << 'EOF'
+# Optional: omit this when using Tack only for planning and local notes.
 project: "https://github.com/orgs/YOUR-ORG/projects/N"
 
 focus:
@@ -71,7 +72,7 @@ EOF
 ```
 
 Replace:
-- `YOUR-ORG/projects/N` with your GitHub Project URL
+- `YOUR-ORG/projects/N` with your GitHub Project URL, or omit `project` to use planning and local notes without GitHub Projects access
 - `focus` numbers with the epic/issue numbers you want to track
 - `team` entries with your actual team
 - `planning.dir` with the path to your vault's tack directory

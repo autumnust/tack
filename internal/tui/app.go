@@ -301,6 +301,9 @@ type preRenderDoneMsg struct {
 
 func (m AppModel) fetchData() tea.Cmd {
 	return func() tea.Msg {
+		if strings.TrimSpace(m.config.Project) == "" {
+			return fetchDoneMsg{}
+		}
 		if m.client == nil {
 			return fetchDoneMsg{err: fmt.Errorf("GitHub client not available — run 'gh auth login' first")}
 		}
@@ -628,7 +631,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("Refresh failed: %s (using cache)", msg.err)
 				return m, nil
 			}
-			m.err = msg.err
+			m.statusMsg = fmt.Sprintf("Project board unavailable: %s. Planning remains available.", msg.err)
+			return m, nil
+		}
+		if msg.project == nil {
+			m.statusMsg = "Project board disabled. Planning remains available."
 			return m, nil
 		}
 		m.project = msg.project
