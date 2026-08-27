@@ -498,6 +498,29 @@ func TestPinToWeekFocus(t *testing.T) {
 	assertStatus(t, app, "already")
 }
 
+func TestPinTogglesSelectedHibanaNote(t *testing.T) {
+	app := newTestApp()
+	app.view = viewPlan
+	app.plan.Scratch = []model.ScratchNote{
+		{Text: "first", CreatedAt: time.Now().Add(-time.Hour)},
+		{Text: "second", CreatedAt: time.Now()},
+	}
+	app.planView.SetData(app.plan, app.project)
+	app.planView.SetSection(sectionHibana)
+
+	app = sendCommand(t, app, "pin")
+	if !app.plan.Scratch[1].Pinned {
+		t.Fatal("selected Hibana note was not pinned")
+	}
+	assertStatus(t, app, "Pinned Hibana note")
+
+	app = sendCommand(t, app, "pin")
+	if app.plan.Scratch[1].Pinned {
+		t.Fatal("second :pin did not unpin the selected Hibana note")
+	}
+	assertStatus(t, app, "Unpinned Hibana note")
+}
+
 // Test 14: Tab navigation between team members
 func TestTabNavigation(t *testing.T) {
 	app := newTestApp()

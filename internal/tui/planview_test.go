@@ -298,6 +298,38 @@ func TestHibanaUpdatedItemsSortToTop(t *testing.T) {
 	}
 }
 
+func TestHibanaPinnedNotesRenderInPinnedSectionFirst(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	plan := &model.Plan{Scratch: []model.ScratchNote{
+		{Text: "new regular", CreatedAt: now, Pinned: false},
+		{Text: "older pinned", CreatedAt: now.Add(-2 * time.Hour), Pinned: true},
+		{Text: "newer pinned", CreatedAt: now.Add(-time.Hour), Pinned: true},
+		{Text: "[research]later", CreatedAt: now.Add(time.Hour)},
+	}}
+	m := NewPlanViewModel(plan, nil)
+	m.SetSection(sectionHibana)
+
+	// Pinned notes stay at the top, newest pin first; regular and research
+	// notes retain their separate recency ordering below that section.
+	if len(m.flatItems) != 6 {
+		t.Fatalf("expected pinned header + 2 pins + regular + research header + research, got %d", len(m.flatItems))
+	}
+	if !m.flatItems[0].header || m.flatItems[0].headerLabel != "Pinned" {
+		t.Fatalf("first item = %+v, want Pinned header", m.flatItems[0])
+	}
+	for position, want := range []int{2, 1, 0} {
+		if got := m.flatItems[position+1].focusIdx; got != want {
+			t.Errorf("item %d index = %d, want %d", position+1, got, want)
+		}
+	}
+	if !m.flatItems[4].header || m.flatItems[4].headerLabel != "Research" {
+		t.Fatalf("fifth item = %+v, want Research header", m.flatItems[4])
+	}
+	if got := m.flatItems[5].focusIdx; got != 3 {
+		t.Errorf("research index = %d, want 3", got)
+	}
+}
+
 func TestHibanaCursorSkipsHeader(t *testing.T) {
 	plan := &model.Plan{
 		Scratch: []model.ScratchNote{

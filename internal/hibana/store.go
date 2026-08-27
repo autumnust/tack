@@ -129,11 +129,38 @@ func (s *Store) Edit(id ID, newText string) (Note, error) {
 		return Note{}, fmt.Errorf("hibana: edit: id %s not found", id)
 	}
 	now := nowFunc()
-	ev := Event{EventID: NewID(), NoteID: id, Op: OpAdd, TS: now, Text: newText, CreatedAt: existing.CreatedAt}
+	ev := Event{EventID: NewID(), NoteID: id, Op: OpAdd, TS: now, Text: newText, Pinned: existing.Pinned, CreatedAt: existing.CreatedAt}
 	if err := s.log.Append(ev); err != nil {
 		return Note{}, err
 	}
-	return Note{ID: id, Text: newText, CreatedAt: existing.CreatedAt, UpdatedAt: now}, nil
+	return Note{ID: id, Text: newText, Pinned: existing.Pinned, CreatedAt: existing.CreatedAt, UpdatedAt: now}, nil
+}
+
+// SetPinned changes whether a note is kept in the pinned section at the top
+// of the Hibana view. The state is recorded in the append-only log so it is
+// retained across restarts and device synchronization.
+func (s *Store) SetPinned(id ID, pinned bool) (Note, error) {
+	events, err := s.log.Read()
+	if err != nil {
+		return Note{}, err
+	}
+	var existing *Note
+	for _, n := range Fold(events) {
+		if n.ID == id {
+			n2 := n
+			existing = &n2
+			break
+		}
+	}
+	if existing == nil {
+		return Note{}, fmt.Errorf("hibana: pin: id %s not found", id)
+	}
+	now := nowFunc()
+	ev := Event{EventID: NewID(), NoteID: id, Op: OpAdd, TS: now, Text: existing.Text, Pinned: pinned, CreatedAt: existing.CreatedAt}
+	if err := s.log.Append(ev); err != nil {
+		return Note{}, err
+	}
+	return Note{ID: id, Text: existing.Text, Pinned: pinned, CreatedAt: existing.CreatedAt, UpdatedAt: now}, nil
 }
 
 // Delete removes a note. Idempotent: deleting a non-existent id appends a

@@ -10,6 +10,7 @@ import (
 type Note struct {
 	ID        ID        `json:"id"`
 	Text      string    `json:"text"`
+	Pinned    bool      `json:"pinned,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -43,6 +44,7 @@ func Fold(events []Event) []Note {
 			s.note = Note{
 				ID:        e.NoteID,
 				Text:      e.Text,
+				Pinned:    e.Pinned,
 				CreatedAt: e.CreatedAt,
 				UpdatedAt: e.TS,
 			}

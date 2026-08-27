@@ -1868,7 +1868,7 @@ func (m AppModel) cmdHelp() (tea.Model, tea.Cmd) {
 		"  " + key(":delnote") + "Clear notes from selected issue",
 		"  " + key(":resolve") + "Mark all 1v1 sections resolved (current person)",
 		"  " + key(":unresolve") + "Reopen all resolved 1v1 sections",
-		"  " + key(":pin") + "Pin selected issue to week focus",
+		"  " + key(":pin") + "Pin selected issue to week focus (or toggle selected Hibana note)",
 		"  " + key(":undo") + "Undo last pending operation",
 		"  " + key(":open") + "Open selected issue in browser",
 		"  " + key(":h") + "Show this help",
@@ -2145,6 +2145,30 @@ func (m AppModel) cmdDelNote(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) cmdPin(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 && m.view == viewPlan && m.planView.section == sectionHibana {
+		fi := m.planView.currentFlat()
+		if fi == nil || fi.header || fi.focusIdx < 0 || fi.focusIdx >= len(m.plan.Scratch) {
+			m.statusMsg = "No Hibana note selected"
+			return m, nil
+		}
+		idx := fi.focusIdx
+		updated, err := m.scratchSetPinned(m.plan.Scratch[idx], !m.plan.Scratch[idx].Pinned)
+		if err != nil {
+			m.statusMsg = "Hibana pin failed: " + err.Error()
+			return m, nil
+		}
+		m.plan.Scratch[idx] = updated
+		m.planView.SetData(m.plan, m.project)
+		m.planView.SetSection(sectionHibana)
+		if updated.Pinned {
+			m.planView.CursorDown() // skip the Pinned section header
+			m.statusMsg = "Pinned Hibana note"
+		} else {
+			m.statusMsg = "Unpinned Hibana note"
+		}
+		return m, nil
+	}
+
 	var issueNum int
 	var repo, title string
 
@@ -3941,6 +3965,7 @@ func notesToScratch(notes []hibana.Note) []model.ScratchNote {
 		out = append(out, model.ScratchNote{
 			Id:        string(n.ID),
 			Text:      n.Text,
+			Pinned:    n.Pinned,
 			CreatedAt: n.CreatedAt,
 			UpdatedAt: n.UpdatedAt,
 		})
@@ -3965,6 +3990,7 @@ func (m *AppModel) scratchAdd(text string) (model.ScratchNote, error) {
 	return model.ScratchNote{
 		Id:        string(n.ID),
 		Text:      n.Text,
+		Pinned:    n.Pinned,
 		CreatedAt: n.CreatedAt,
 		UpdatedAt: n.UpdatedAt,
 	}, nil
@@ -3985,6 +4011,30 @@ func (m *AppModel) scratchEdit(old model.ScratchNote, newText string) (model.Scr
 	return model.ScratchNote{
 		Id:        string(n.ID),
 		Text:      n.Text,
+		Pinned:    n.Pinned,
+		CreatedAt: n.CreatedAt,
+		UpdatedAt: n.UpdatedAt,
+	}, nil
+}
+
+// scratchSetPinned persists a Hibana note's pinned state and returns its
+// current model representation. A store-less session keeps the state in
+// memory for the remainder of the TUI session.
+func (m *AppModel) scratchSetPinned(old model.ScratchNote, pinned bool) (model.ScratchNote, error) {
+	if m.hibanaStore == nil || old.Id == "" {
+		old.Pinned = pinned
+		old.UpdatedAt = time.Now()
+		return old, nil
+	}
+	n, err := m.hibanaStore.SetPinned(hibana.ID(old.Id), pinned)
+	if err != nil {
+		return model.ScratchNote{}, err
+	}
+	go m.bestEffortSync()
+	return model.ScratchNote{
+		Id:        string(n.ID),
+		Text:      n.Text,
+		Pinned:    n.Pinned,
 		CreatedAt: n.CreatedAt,
 		UpdatedAt: n.UpdatedAt,
 	}, nil

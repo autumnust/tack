@@ -71,6 +71,37 @@ func TestStoreEditPreservesIDAndCreatedAt(t *testing.T) {
 	}
 }
 
+func TestStoreSetPinnedPersistsAndEditPreservesIt(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, NopBackend())
+	n, _ := s.Add("keep visible")
+
+	pinned, err := s.SetPinned(n.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pinned.Pinned {
+		t.Fatal("SetPinned(true) did not pin the note")
+	}
+
+	edited, err := s.Edit(n.ID, "keep visible, updated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !edited.Pinned {
+		t.Fatal("editing a pinned note cleared its pinned state")
+	}
+
+	s2, _ := Open(dir, NopBackend())
+	notes, err := s2.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 || !notes[0].Pinned {
+		t.Fatalf("pinned state was not retained after reopening: %+v", notes)
+	}
+}
+
 func TestStoreEditUnknownIDFails(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, NopBackend())

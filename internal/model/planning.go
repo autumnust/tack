@@ -58,6 +58,7 @@ type TodoItem struct {
 type ScratchNote struct {
 	Id        string    `yaml:"id,omitempty"`
 	Text      string    `yaml:"text"`
+	Pinned    bool      `yaml:"pinned,omitempty"`
 	CreatedAt time.Time `yaml:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at,omitempty"`
 }

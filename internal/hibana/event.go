@@ -27,6 +27,7 @@ type Event struct {
 	Op        Op        `json:"op"`
 	TS        time.Time `json:"ts"`
 	Text      string    `json:"text,omitempty"`
+	Pinned    bool      `json:"pinned,omitempty"`
 	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
