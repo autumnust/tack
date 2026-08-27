@@ -309,23 +309,30 @@ func TestHibanaPinnedNotesRenderInPinnedSectionFirst(t *testing.T) {
 	m := NewPlanViewModel(plan, nil)
 	m.SetSection(sectionHibana)
 
-	// Pinned notes stay at the top, newest pin first; regular and research
-	// notes retain their separate recency ordering below that section.
-	if len(m.flatItems) != 6 {
-		t.Fatalf("expected pinned header + 2 pins + regular + research header + research, got %d", len(m.flatItems))
+	// Pinned notes stay at the top, newest pin first. An Unpinned divider
+	// separates regular notes from the pinned group; research keeps its own
+	// divider below the unpinned regular notes.
+	if len(m.flatItems) != 7 {
+		t.Fatalf("expected pinned header + 2 pins + unpinned header + regular + research header + research, got %d", len(m.flatItems))
 	}
 	if !m.flatItems[0].header || m.flatItems[0].headerLabel != "Pinned" {
 		t.Fatalf("first item = %+v, want Pinned header", m.flatItems[0])
 	}
-	for position, want := range []int{2, 1, 0} {
+	for position, want := range []int{2, 1} {
 		if got := m.flatItems[position+1].focusIdx; got != want {
 			t.Errorf("item %d index = %d, want %d", position+1, got, want)
 		}
 	}
-	if !m.flatItems[4].header || m.flatItems[4].headerLabel != "Research" {
-		t.Fatalf("fifth item = %+v, want Research header", m.flatItems[4])
+	if !m.flatItems[3].header || m.flatItems[3].headerLabel != "Unpinned" {
+		t.Fatalf("fourth item = %+v, want Unpinned header", m.flatItems[3])
 	}
-	if got := m.flatItems[5].focusIdx; got != 3 {
+	if got := m.flatItems[4].focusIdx; got != 0 {
+		t.Errorf("regular index = %d, want 0", got)
+	}
+	if !m.flatItems[5].header || m.flatItems[5].headerLabel != "Research" {
+		t.Fatalf("sixth item = %+v, want Research header", m.flatItems[5])
+	}
+	if got := m.flatItems[6].focusIdx; got != 3 {
 		t.Errorf("research index = %d, want 3", got)
 	}
 }

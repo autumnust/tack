@@ -205,6 +205,9 @@ func (m *PlanViewModel) rebuildFlat() {
 				m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
 			}
 		}
+		if len(pinned) > 0 && (len(regular) > 0 || len(research) > 0) {
+			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: -1, subIdx: -1, header: true, headerLabel: "Unpinned"})
+		}
 		for _, i := range regular {
 			m.flatItems = append(m.flatItems, flatItem{section: sectionHibana, focusIdx: i, subIdx: -1})
 		}
